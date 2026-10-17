@@ -190,6 +190,8 @@ export function GlobalSettings() {
                 <Field label="每群每小时主动发言上限" hint="接话不计入"><input className={css.input} style={{ width: 90 }} type="number" min={0} value={s.proactivePerHour} onChange={(e) => setS({ ...s, proactivePerHour: Number(e.target.value) })} /></Field>
                 <Field label="session 空闲重置（分钟）" hint="超时后下次触发新开 session"><input className={css.input} style={{ width: 90 }} type="number" min={5} value={Math.round(s.sessionIdleMs / 60000)} onChange={(e) => setS({ ...s, sessionIdleMs: Number(e.target.value) * 60000 })} /></Field>
                 <Field label="消息合并窗口（毫秒）" hint="窗口内的 @ / 回复会合成一条消息发给 agent；agent 正在忙时也会等它说完再一起发"><input className={css.input} style={{ width: 90 }} type="number" min={0} step={100} value={s.wakeMergeMs ?? 2000} onChange={(e) => setS({ ...s, wakeMergeMs: Number(e.target.value) })} /></Field>
+                <Field label="后台任务模型 · 快速" hint="主 agent 给调研/快速响应类任务（tier: fast）选的模型；空 = 跟随全局 agent 模型"><input className={css.input} style={{ width: 220 }} value={s.taskModels?.fast ?? ''} placeholder="deepseek/…" onChange={(e) => setS({ ...s, taskModels: { fast: e.target.value, quality: s.taskModels?.quality ?? '' } })} /></Field>
+                <Field label="后台任务模型 · 高质量" hint="主 agent 给写代码/修 bug 类任务（tier: quality）选的模型；空 = 跟随全局 agent 模型"><input className={css.input} style={{ width: 220 }} value={s.taskModels?.quality ?? ''} placeholder="deepseek/…" onChange={(e) => setS({ ...s, taskModels: { fast: s.taskModels?.fast ?? '', quality: e.target.value } })} /></Field>
               </div>
             </section>
             <section className={css.section}><h4>说话风格 · 发送前用随机子风格润色</h4>

@@ -190,6 +190,7 @@ export class Store {
       'ALTER TABLE conversations ADD COLUMN avatar TEXT',
       'ALTER TABLE conversations ADD COLUMN title_src TEXT',
       'ALTER TABLE messages ADD COLUMN ntext TEXT',
+      'ALTER TABLE tasks ADD COLUMN model TEXT',
     ]) { try { this.db.exec(sql) } catch {} }
     this.db.exec('CREATE INDEX IF NOT EXISTS messages_ntext ON messages(ntext)')
     // Stickers arrived after the first installs, so the table is created here
@@ -260,6 +261,7 @@ export class Store {
         // nested blocks merge too: a settings row written before a field existed
         // (or with an emptied sub-style pool) must not lose the defaults wholesale
         style: { ...structuredClone(DEFAULT_SETTINGS.style), ...stored.style },
+        taskModels: { ...DEFAULT_SETTINGS.taskModels, ...stored.taskModels },
         stickers,
       }
       if (stored.ownProjects) this.settingsCache.ownProjects = backfillProjects(stored.ownProjects)
@@ -678,10 +680,10 @@ export class Store {
   }
 
   // ---- tasks ---------------------------------------------------------------
-  createTask(t: { conv: string, title: string, kind: string, sessionId: string, repo?: string }): number {
+  createTask(t: { conv: string, title: string, kind: string, sessionId: string, repo?: string, model?: string }): number {
     const now = Date.now()
-    return Number(this.db.prepare('INSERT INTO tasks(created, updated, conv, title, kind, status, session_id, repo, issue, pr, note) VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, \'\')')
-      .run(now, now, t.conv, t.title, t.kind, 'running', t.sessionId, t.repo ?? null).lastInsertRowid)
+    return Number(this.db.prepare('INSERT INTO tasks(created, updated, conv, title, kind, status, session_id, repo, issue, pr, note, model) VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, \'\', ?)')
+      .run(now, now, t.conv, t.title, t.kind, 'running', t.sessionId, t.repo ?? null, t.model ?? null).lastInsertRowid)
   }
 
   updateTask(id: number, patch: Partial<{ status: string, issue: string, pr: string, note: string, repo: string, title: string }>): void {

@@ -1671,14 +1671,14 @@ export class OrangeBot {
   }
 
   /** Create a GUI-visible session in the orange workspace with our preset mounted. */
-  async createAgent(sessionId: string, role: 'chat' | 'task', title: string, conv: string, admin = false): Promise<any> {
+  async createAgent(sessionId: string, role: 'chat' | 'task', title: string, conv: string, admin = false, model?: string): Promise<any> {
     const ctx = this.ctx as any
     const workspace = await ctx.workspaceRegistry.create(this.config.workspace)
     const presetId = this.config.agentPreset
     const handle = await ctx.agents.create({
       sessionId,
       meta: { cwd: workspace.path, agentPreset: presetId },
-      agentOptions: { provider: this.config.llm.provider, model: this.config.llm.agentModel },
+      agentOptions: { provider: this.config.llm.provider, model: model || this.config.llm.agentModel },
       setup: async (agentCtx: any) => {
         await ctx.agentPresets.mount(agentCtx, presetId)
         this.decorate(agentCtx, role, conv)
@@ -1689,17 +1689,19 @@ export class OrangeBot {
     ctx.sessionTitle.rename(handle.agent.session, title)
     // `admin` carries the authority of the request that created the session: a task
     // worker started by the admin may read across conversations, one started by a
-    // group member may not (see tools.ts).
-    this.store.set(`role:${sessionId}`, { role, conv, admin })
+    // group member may not (see tools.ts). `model` rides along so a resumed
+    // worker keeps the tier it was started with instead of falling back.
+    this.store.set(`role:${sessionId}`, { role, conv, admin, model })
     return handle.agent
   }
 
   async resumeAgent(sessionId: string, role: 'chat' | 'task', conv: string): Promise<any> {
     const ctx = this.ctx as any
     if (!(await ctx.sessionPersistence.stat(sessionId))) return undefined
+    const model = this.store.get<{ model?: string } | undefined>(`role:${sessionId}`, undefined)?.model
     const handle = await ctx.agents.resume({
       resumeSessionId: sessionId,
-      agentOptions: { provider: this.config.llm.provider, model: this.config.llm.agentModel },
+      agentOptions: { provider: this.config.llm.provider, model: model || this.config.llm.agentModel },
       setup: async (agentCtx: any) => {
         await ctx.agentPresets.mount(agentCtx, this.config.agentPreset)
         this.decorate(agentCtx, role, conv)
@@ -1784,10 +1786,12 @@ export class OrangeBot {
   }
 
   /** Background worker session for a task; returns the task id. */
-  async startTask(conv: string, title: string, kind: string, brief: string, repo?: string, admin = false): Promise<number> {
+  async startTask(conv: string, title: string, kind: string, brief: string, repo?: string, admin = false, tier?: 'fast' | 'quality'): Promise<number> {
+    const models = this.store.settings().taskModels
+    const model = tier === 'fast' ? models?.fast ?? '' : tier === 'quality' ? models?.quality ?? '' : ''
     const sessionId = `orange-task-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`
-    const id = this.store.createTask({ conv, title, kind, sessionId, repo })
-    const agent = await this.createAgent(sessionId, 'task', `🛠 #${id} ${title}`, conv, admin)
+    const id = this.store.createTask({ conv, title, kind, sessionId, repo, model: model || undefined })
+    const agent = await this.createAgent(sessionId, 'task', `🛠 #${id} ${title}`, conv, admin, model || undefined)
     // steer() = 插入到当前轮的下一个 step 边界；followup() 只会排队等这一轮跑完
     agent.steer(createUserMessage({
       content: [{ type: 'text', text: `任务 #${id}（${kind}）：${title}\n来源会话：${conv}\n${repo ? `相关仓库：${repo}\n` : ''}\n${brief}` }],
@@ -1808,6 +1812,22 @@ export class OrangeBot {
     agent.steer(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
     this.store.updateTask(id, { status: 'running' })
     return true
+  }
+
+  /**
+   * A worker's turn errored (agent/error: API failure after retries, crash).
+   * The worker cannot report its own death, so without this the task row stays
+   * "running" forever and the main agent waits on a ghost — mark it failed and
+   * tell the group, mentioning that task_message can revive the session.
+   */
+  async taskWorkerFailed(sessionId: string, error: unknown): Promise<void> {
+    const task = this.store.taskBySession(sessionId)
+    if (!task || task.status !== 'running') return // not a worker, or already closed out
+    const reason = String((error as Error)?.message ?? error).slice(0, 160)
+    this.store.updateTask(task.id, { status: 'failed', note: `出错：${reason}` })
+    this.broadcast({ type: 'task', id: task.id })
+    this.log.warn(`task #${task.id} failed: ${reason}`)
+    await this.send(task.conv, [{ type: 'text', text: `后台任务 #${task.id}「${task.title}」挂了：${reason}\n要继续的话跟我说，我让它在原来的进度上重跑` }], { trigger: 'task' })
   }
 
   /** When each live agent's current activity began (`agent/status` → running). */

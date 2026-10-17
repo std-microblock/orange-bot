@@ -183,6 +183,12 @@ export interface RuntimeSettings {
   sessionIdleMs: number
   /** Triggers landing within this window (ms) merge into one agent turn; 0 = no waiting. */
   wakeMergeMs: number
+  /**
+   * Model tiers the main agent may pick for a background worker (`start_task`
+   * tier): fast = 调研/快速响应, quality = 写代码/修 bug. Empty = the configured
+   * agentModel, which is also what the default tier always uses.
+   */
+  taskModels: { fast: string, quality: string }
   /** Extra persona text appended to the chat agent prompt. */
   personaExtra: string
   /** Speaking style: one global main style plus per-send random sub-styles. */
@@ -267,6 +273,7 @@ export const DEFAULT_SETTINGS: RuntimeSettings = {
   botEmojiPrefix: false,
   sessionIdleMs: 2 * 3600_000,
   wakeMergeMs: 2000,
+  taskModels: { fast: '', quality: '' },
   personaExtra: '',
   style: {
     enabled: true,

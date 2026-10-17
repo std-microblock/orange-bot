@@ -502,24 +502,34 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
       title: { type: 'string', required: true, description: 'Short title.' },
       kind: { type: 'string', enum: ['bugfix', 'feature', 'research', 'other'], required: true },
       repo: { type: 'string', description: 'owner/name if it concerns a repository.' },
+      tier: { type: 'string', enum: ['default', 'fast', 'quality'], description: 'Worker model tier: quality for writing/fixing code and PRs (correctness matters), fast for research/lookup/quick answers (speed matters), default when unsure — the panel maps tiers to concrete models, unset tiers follow the global agent model.' },
       brief: { type: 'string', required: true, description: 'Everything the worker needs: the report, versions, logs (#seq refs), what the user expects, and what to deliver.' },
     },
     output: TEXT_OUT,
     async execute(args: any, exec: any) {
       const own = roleOf(exec)
-      const id = await bot().startTask(own.conv, String(args.title), String(args.kind), String(args.brief), args.repo, fullAccess(own))
+      const tier = args.tier === 'fast' || args.tier === 'quality' ? args.tier : undefined
+      const id = await bot().startTask(own.conv, String(args.title), String(args.kind), String(args.brief), args.repo, fullAccess(own), tier)
       return `task #${id} started`
     },
   })))
 
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'list_tasks',
-    description: 'List background tasks (id, status, repo, issue/PR links), optionally filtered by keyword.',
+    description: 'List background tasks (id, status, repo, issue/PR links), optionally filtered by keyword. Status shown is corrected against the live worker agent: a task claiming "running" shows idle (worker alive but not working) or dead (no worker at all — crashed or lost to a restart; task_message can revive it) when nobody is actually executing it.',
     parameters: { query: { type: 'string' } },
     output: TEXT_OUT,
     async execute(args: any) {
-      const rows = bot().store.tasks(30, args.query)
-      return rows.length ? rows.map((t: any) => `#${t.id} [${t.status}] ${t.kind} ${t.title}${t.repo ? ' ' + t.repo : ''}${t.issue ? ' issue=' + t.issue : ''}${t.pr ? ' pr=' + t.pr : ''} (from ${t.conv})${t.note ? ' — ' + t.note : ''}`).join('\n') : '(none)'
+      const b = bot()
+      // the tasks.status column only changes when the worker itself calls task_update;
+      // a crashed or silent worker leaves "running" forever, so judge by the live agent
+      const agent = new Map((b.ctx.agents.list() as any[]).map((a) => [String(a.session.id), a]))
+      const rows = b.store.tasks(30, args.query).map((t: any) => {
+        if (t.status !== 'running') return t
+        const a = agent.get(String(t.session_id))
+        return { ...t, status: a?.status === 'running' ? 'running' : a ? 'idle' : 'dead' }
+      })
+      return rows.length ? rows.map((t: any) => `#${t.id} [${t.status}] ${t.kind} ${t.title}${t.repo ? ' ' + t.repo : ''}${t.model ? ' (' + t.model + ')' : ''}${t.issue ? ' issue=' + t.issue : ''}${t.pr ? ' pr=' + t.pr : ''} (from ${t.conv})${t.note ? ' — ' + t.note : ''}`).join('\n') : '(none)'
     },
   })))
 

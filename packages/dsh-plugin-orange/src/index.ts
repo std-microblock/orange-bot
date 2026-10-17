@@ -86,6 +86,13 @@ export function apply(ctx: Context, config: Config) {
     const id = payload?.agent?.session?.id
     if (bot && id !== undefined) bot.noteAgentStatus(String(id), 'idle')
   })
+  // a worker whose turn errored (API failure after retries, crash): the worker
+  // itself is gone by then, so nobody would ever report — mark and notify here
+  ctx.on('agent/error' as any, (payload: any) => {
+    const id = payload?.agent?.session?.id
+    if (!bot || id === undefined) return
+    void bot.taskWorkerFailed(String(id), payload.error).catch((e) => bot?.reportError('task failure notice', e))
+  })
   ctx.effect(() => {
     let stopPoller: (() => void) | undefined
     let disposed = false
