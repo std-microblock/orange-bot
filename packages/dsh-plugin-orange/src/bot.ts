@@ -1804,34 +1804,59 @@ export class OrangeBot {
   }
 
   /**
-   * Background tasks whose worker is executing right now — judged by the live agent,
-   * not the `tasks.status` column: a worker that ends its turn without `task_update`
-   * leaves its row on "running" forever. `conv` limits it to one group (and its twin).
+   * Background tasks that are still alive — executing right now, or waiting for
+   * something (a timer, a sleeping job) between turns.
+   *
+   * Neither source alone is enough. The live agent knows which worker is running
+   * *this second*, but a long task ends its turn while it waits (the wake script
+   * sleeps for hours), so its agent is "idle" exactly when the task matters most —
+   * judging by the agent alone is what used to hide such tasks from `/ai.bg`. The
+   * `tasks` row knows which tasks exist, but a worker that ends its turn without
+   * `task_update` leaves it on "running" forever. So both are read: the row decides
+   * membership (`running` / `waiting`), the live agent only upgrades a row to
+   * "executing now" with a precise start time. `conv` limits it to one group (and
+   * its twin).
    */
-  runningTasks(conv?: string): { task: any, since: number, exact: boolean, subagents: number }[] {
+  runningTasks(conv?: string): { task: any, since: number, exact: boolean, subagents: number, heartbeat: number }[] {
     const scope = conv ? new Set([conv, this.store.group(conv).peer].filter(Boolean)) : undefined
     const agents = this.ctx.agents.list() as any[]
-    const out: { task: any, since: number, exact: boolean, subagents: number }[] = []
+    const out: { task: any, since: number, exact: boolean, subagents: number, heartbeat: number }[] = []
+    const seen = new Set<number>()
     for (const agent of agents) {
       if (agent.status !== 'running') continue
       const task = this.store.taskBySession(String(agent.session.id))
       if (!task || (scope && !scope.has(task.conv))) continue
+      seen.add(Number(task.id))
       const known = this.runningSince.get(String(agent.session.id))
       const subagents = agents.filter((a) => a !== agent && a.status === 'running' && this.ctx.agents.isOwnedBy(a.session.id, agent)).length
-      out.push({ task, since: known ?? task.created, exact: known !== undefined, subagents })
+      out.push({ task, since: known ?? task.created, exact: known !== undefined, subagents, heartbeat: Number(task.updated) || Number(task.created) })
     }
-    return out.sort((a, b) => a.since - b.since)
+    for (const task of this.store.activeTasks()) {
+      if (seen.has(Number(task.id))) continue
+      if (scope && !scope.has(task.conv)) continue
+      out.push({ task, since: Number(task.created), exact: false, subagents: 0, heartbeat: Number(task.updated) || Number(task.created) })
+    }
+    // executing first (those are the ones burning tokens), then the longest wait
+    return out.sort((a, b) => (Number(b.exact) - Number(a.exact)) || (a.since - b.since))
   }
 
-  /** `/ai.bg` reply: what is running in the background, and for how long. */
+  /** `/ai.bg` reply: what is still running in the background, and for how long. */
   backgroundReport(conv?: string): string {
     const rows = this.runningTasks(conv)
     const where = conv ? '本群' : ''
     if (!rows.length) return `${where}现在没有后台任务在跑`
     const now = Date.now()
-    const lines = rows.map(({ task, since, exact, subagents }) => {
+    const executing = rows.filter((r) => r.exact).length
+    // a waiting task is not "已跑": its worker is asleep, and the heartbeat is what
+    // says it is alive, so the two cases are spelled out differently
+    const note = executing === rows.length ? ''
+      : executing ? `（${executing} 个正在执行，${rows.length - executing} 个在等待）`
+      : '（都在等待，没有正在执行的）'
+    const lines = rows.map(({ task, since, exact, subagents, heartbeat }) => {
+      const bits: string[] = exact
+        ? [`已跑 ${humanDuration(now - since)}`]
+        : [task.status === 'waiting' ? '等待中' : '未在执行', `最后心跳 ${humanDuration(now - heartbeat)}前`, `建于 ${humanDuration(now - task.created)}前`]
       // `since` is when this run began; a task resumed by task_message has an older creation time
-      const bits = [exact ? `已跑 ${humanDuration(now - since)}` : `已跑 ${humanDuration(now - since)}（从建任务算）`]
       if (exact && since - task.created > 60_000) bits.push(`任务建于 ${humanDuration(now - task.created)}前`)
       if (subagents) bits.push(`${subagents} 个子 agent`)
       if (!conv) bits.push(`来自 ${this.store.convTitle(task.conv) || task.conv}`)
@@ -1839,7 +1864,7 @@ export class OrangeBot {
       else if (task.issue) bits.push(`issue ${task.issue}`)
       return `#${task.id} ${task.title}\n  ${bits.join(' · ')}`
     })
-    return `${where}后台在跑 ${rows.length} 个任务：\n${lines.join('\n')}`
+    return `${where}后台在跑 ${rows.length} 个任务${note}：\n${lines.join('\n')}`
   }
 
   // ----------------------------------------------------------------- style --

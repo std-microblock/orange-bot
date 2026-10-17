@@ -690,6 +690,16 @@ export class Store {
 
   task(id: number): any { return this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) }
   taskBySession(sessionId: string): any { return this.db.prepare('SELECT * FROM tasks WHERE session_id = ?').get(sessionId) }
+  /**
+   * Tasks that are still supposed to be alive: `running` (working, or a worker that
+   * has not reported back yet) and `waiting` (asleep between wake-ups). Unlike
+   * {@link tasks} this is not a "newest N" window — a task due in two days must not
+   * drop off the list just because a hundred other tasks were created after it.
+   */
+  activeTasks(): any[] {
+    return this.db.prepare("SELECT * FROM tasks WHERE status IN ('running', 'waiting') ORDER BY id DESC").all() as any[]
+  }
+
   taskByPr(repo: string, pr: string): any {
     return this.db.prepare('SELECT * FROM tasks WHERE repo = ? AND (pr = ? OR pr LIKE ? OR issue = ? OR issue LIKE ?) ORDER BY id DESC LIMIT 1')
       .get(repo, pr, `%/${pr}`, pr, `%/${pr}`)
