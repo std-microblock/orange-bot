@@ -19,6 +19,7 @@ import { humanizeAtMarkup } from './qq.ts'
 import { screenTrigger } from './privacy.ts'
 import { CHAT_PERSONA, TASK_PERSONA, classifierSystem, projectBrief, projectLine, stickerPrompt, stylePolishSystem, stylePrompt } from './prompts.ts'
 import { acceptStyled, pickSubStyles } from './style.ts'
+import { REPEAT_MIN_CHARS, REPEAT_WINDOW_MS, answerKey, repeatSendError, sameAnswer, sendUnknownError } from './repeat.ts'
 import { MessageSegments, StickerService, segmentWantsSticker } from './stickers.ts'
 import type { MessageSegment } from './stickers.ts'
 import { createLog, type Log } from './log.ts'
@@ -208,6 +209,12 @@ export class OrangeBot {
   private errorTimes: number[] = []
   /** Messages we sent on cg, by text, to tell bot vs human on the shared account. */
   private pendingSelfTexts: { conv: string, text: string, sticker?: boolean, label?: string, ts: number }[] = []
+  /**
+   * Answers already on their way in each conversation, for the repeat guard: pushed when the send
+   * starts, not when it is confirmed, because a call that fails after the platform took the message
+   * leaves no row to compare against (see repeat.ts).
+   */
+  private recentAnswers = new Map<string, { at: number, key: string }[]>()
   /** Merged-forward bundles already fetched, so resolving one message's attachments costs one call. */
   private forwardCache = new Map<string, { at: number, items: Promise<BundleItem[]> }>()
   readonly mediaDir: string
@@ -1920,6 +1927,20 @@ export class OrangeBot {
       if (p.type === 'at') return `@${p.name || this.atLabel(conv, p.userId ?? '')}`
       return p.text ?? (p.type === 'image' ? stickerText ?? '[图片]' : p.type === 'sticker' ? stickerText ?? '[表情]' : p.type === 'file' ? `[文件 ${p.name ?? ''}]` : p.type === 'buttons' ? `[按钮 ${p.buttons?.flat().map((b) => b.label).join('/')}]` : '')
     }).join(''), (id) => this.atLabel(conv, id))
+    // The repeat guard (see repeat.ts): the same answer must not reach one conversation twice.
+    // Every caller passes through here — the chat session's `say`, a background task worker's, the
+    // panel's — so a worker answering a question the chat agent already answered is caught too.
+    // The answer counts from this moment on, before the bridge is called: the retry the guard has to
+    // stop is exactly the one after a send whose outcome we never learned.
+    const answer = answerKey(text)
+    if (answer.length >= REPEAT_MIN_CHARS) {
+      const now = Date.now()
+      const seen = (this.recentAnswers.get(conv) ?? []).filter((prev) => now - prev.at < REPEAT_WINDOW_MS)
+      const repeat = seen.find((prev) => sameAnswer(prev.key, answer))
+      if (repeat) throw new Error(repeatSendError(Math.round((now - repeat.at) / 1000)))
+      seen.push({ at: now, key: answer })
+      this.recentAnswers.set(conv, seen)
+    }
     const record = { ts: Date.now(), conv, trigger: opts.trigger ?? 'agent', sessionId: opts.sessionId, text, dryRun: group.dryRun, delivered: false, context: opts.context }
     const state = this.state(conv)
     state.lastBotTs = Date.now()
@@ -1961,7 +1982,9 @@ export class OrangeBot {
       return { ids, dryRun: false }
     } catch (error) {
       this.store.recordResponse({ ...record, error: String((error as Error).message ?? error) })
-      throw error
+      // 结果未知：桥可能在平台收下这条之后才失败（见 repeat.ts），所以给 agent 的错误里要写明
+      // 「别原样重发」——否则它下一轮做的就是再发一遍同一句话。
+      throw new Error(`${(error as Error).message ?? error}（${sendUnknownError()}）`)
     }
   }
 
