@@ -341,6 +341,18 @@ export class OrangeBot {
     return rank === 'member' ? '' : RANK_LABEL[rank]
   }
 
+  /**
+   * Whether this sender passes the group's triggerLimit (@ / 回复 / /ai).
+   * `groupAdmin` = 群主+群管理员 (bot admins too — rank() reports them as 'bot'),
+   * `botAdmin` = 机器人管理员/开发者 only; missing/'all' = everyone.
+   */
+  mayTrigger(m: InboundMessage): boolean {
+    const limit = this.store.group(m.conv).triggerLimit ?? 'all'
+    if (limit === 'all') return true
+    const rank = this.rank(m.conv, m.senderId)
+    return limit === 'groupAdmin' ? rank !== 'member' : rank === 'bot'
+  }
+
   /** Everyone with a recognizable identity in this conversation, for prompts, tools and the panel. */
   privileged(conv: string): { key: string, name: string, role: Rank }[] {
     const out: { key: string, name: string, role: Rank }[] = []
@@ -658,17 +670,18 @@ export class OrangeBot {
     // ---- trigger decision -------------------------------------------------
     const settings = this.store.group(m.conv)
     const repliedToBot = m.replyTo ? this.store.byId(m.conv, m.replyTo)?.fromBot === true : false
+    const mayTrigger = this.mayTrigger(m)
     let trigger: TriggerKind | undefined
     if (m.direct) {
       // private chats: admin only (on the userbot the admin's own outgoing DMs need /ai)
       if (isAdmin && !m.self) trigger = 'direct'
       else if (isAdmin && m.self && AI_COMMAND.test(cmdText)) trigger = 'command'
-    } else if (AI_COMMAND.test(cmdText) && (settings.whitelisted || isAdmin)) {
+    } else if (AI_COMMAND.test(cmdText) && ((settings.whitelisted && mayTrigger) || isAdmin)) {
       trigger = 'command'
-    } else if (m.mentionsSelf && settings.whitelisted && (m.platform === 'qq' || this.store.settings().cgMentionTrigger)) {
+    } else if (m.mentionsSelf && settings.whitelisted && mayTrigger && (m.platform === 'qq' || this.store.settings().cgMentionTrigger)) {
       // userbot @ is the admin's own account, so only the official bot treats @ as a trigger
       trigger = 'mention'
-    } else if (repliedToBot && settings.whitelisted && !m.self) {
+    } else if (repliedToBot && settings.whitelisted && mayTrigger && !m.self) {
       trigger = 'reply'
     }
     if (trigger) {
@@ -680,7 +693,7 @@ export class OrangeBot {
     if (!m.direct && settings.whitelisted && settings.listen && !m.self) this.scheduleClassify(m.conv)
     else if (AI_COMMAND.test(cmdText) || m.mentionsSelf || repliedToBot) {
       // someone addressed the bot and nothing happened: say why, so this is diagnosable
-      this.log.info(`no trigger ${m.conv} white=${settings.whitelisted} listen=${settings.listen} self=${m.self} mention=${m.mentionsSelf} reply=${repliedToBot}`)
+      this.log.info(`no trigger ${m.conv} white=${settings.whitelisted} listen=${settings.listen} self=${m.self} mention=${m.mentionsSelf} reply=${repliedToBot} limit=${settings.triggerLimit ?? 'all'}`)
     }
   }
 
@@ -1326,6 +1339,8 @@ export class OrangeBot {
    * trigger and resolveQuoted() follows the id into the twin's history.
    */
   private async forwardReply(owner: string, m: InboundMessage): Promise<void> {
+    // this path bypasses the owner-side trigger decision, so the limit is checked here
+    if (!this.mayTrigger(m)) { this.log.info(`no trigger ${m.conv}: trigger limit ${this.store.group(m.conv).triggerLimit}`); return }
     const landed = this.store.db.prepare('SELECT 1 FROM messages WHERE conv = ? AND ts = ? LIMIT 1')
     for (let i = 0; i < 15 && !landed.get(owner, m.ts); i++) await new Promise((resolve) => setTimeout(resolve, 100))
     const state = this.state(owner)

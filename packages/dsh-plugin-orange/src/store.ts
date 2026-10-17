@@ -287,6 +287,7 @@ export class Store {
       whitelisted: own.whitelisted || twin.whitelisted,
       listen: own.listen || twin.listen,
       dryRun: own.dryRun || twin.dryRun,
+      triggerLimit: own.triggerLimit ?? twin.triggerLimit,
     }
   }
 
@@ -301,6 +302,7 @@ export class Store {
       if ('whitelisted' in patch) twin.whitelisted = next.whitelisted
       if ('listen' in patch) twin.listen = next.listen
       if ('dryRun' in patch) twin.dryRun = next.dryRun
+      if ('triggerLimit' in patch) twin.triggerLimit = next.triggerLimit
     }
     this.saveSettings(settings)
     return next

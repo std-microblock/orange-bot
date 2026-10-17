@@ -60,6 +60,13 @@ export interface GroupSettings {
   dryRun: boolean
   /** Classifier-driven proactive participation. */
   listen: boolean
+  /**
+   * Who may trigger the agent in this group (@ / 回复 / /ai): `all` (default,
+   * missing = everyone the whitelist already allows), `groupAdmin` = 群主+群管理员,
+   * `botAdmin` = 机器人管理员/开发者 only. The bot's own admins pass every mode;
+   * the classifier (listen) is the bot's own choice and is never limited.
+   */
+  triggerLimit?: 'all' | 'groupAdmin' | 'botAdmin'
   /** Free-form domain tags shown to the classifier, e.g. 蔚蓝, 开发. */
   tags: string[]
   /** Human notes for the classifier/agent about this group. */

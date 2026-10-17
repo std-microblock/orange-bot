@@ -340,7 +340,7 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
       return b.store.conversations().filter((c) => allowed.has(c.key)).slice(0, 80).map((c) => {
         const g = b.store.group(c.key)
         const roles = c.direct ? [] : b.privileged(c.key).filter((r) => r.role !== 'bot')
-        return `${c.key} ${b.store.convTitle(c.key)}${c.direct ? ' (私聊)' : ''}${g.whitelisted ? ' [白名单]' : ''}${g.dryRun ? ' [dry-run]' : ''}${g.tags.length ? ' tags=' + g.tags.join(',') : ''}${roles.length ? ' ' + roles.map((r) => `${r.role === 'owner' ? '群主' : '群管'}=${r.name}`).join(',') : ''}`
+        return `${c.key} ${b.store.convTitle(c.key)}${c.direct ? ' (私聊)' : ''}${g.whitelisted ? ' [白名单]' : ''}${g.dryRun ? ' [dry-run]' : ''}${g.triggerLimit && g.triggerLimit !== 'all' ? ` [${g.triggerLimit === 'groupAdmin' ? '仅群主管触发' : '仅机器人管理触发'}]` : ''}${g.tags.length ? ' tags=' + g.tags.join(',') : ''}${roles.length ? ' ' + roles.map((r) => `${r.role === 'owner' ? '群主' : '群管'}=${r.name}`).join(',') : ''}`
       }).join('\n') || '(nothing in scope)'
     },
   })))
@@ -556,10 +556,11 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
 
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'group_config',
-    description: 'Admin only (the triggering user must be an admin): change conversation settings — whitelist (bot may respond), dry_run (generate but never deliver), listen (classifier participation), tags/note for the classifier.',
+    description: 'Admin only (the triggering user must be an admin): change conversation settings — whitelist (bot may respond), dry_run (generate but never deliver), listen (classifier participation), trigger_limit (who may @/reply-trigger: all / groupAdmin 群主+群管理员 / botAdmin 机器人管理员), tags/note for the classifier.',
     parameters: {
       conv: { type: 'string', description: 'Conversation key; default current.' },
       whitelisted: { type: 'boolean' }, dry_run: { type: 'boolean' }, listen: { type: 'boolean' },
+      trigger_limit: { type: 'string', description: 'all | groupAdmin | botAdmin' },
       tags: { type: 'array', items: { type: 'string' } }, note: { type: 'string' },
     },
     output: TEXT_OUT,
@@ -571,6 +572,7 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
       if (args.whitelisted !== undefined) patch.whitelisted = !!args.whitelisted
       if (args.dry_run !== undefined) patch.dryRun = !!args.dry_run
       if (args.listen !== undefined) patch.listen = !!args.listen
+      if (args.trigger_limit !== undefined) patch.triggerLimit = ['all', 'groupAdmin', 'botAdmin'].includes(args.trigger_limit) ? args.trigger_limit : 'all'
       if (args.tags !== undefined) patch.tags = args.tags
       if (args.note !== undefined) patch.note = String(args.note)
       const next = bot().store.updateGroup(conv, patch)

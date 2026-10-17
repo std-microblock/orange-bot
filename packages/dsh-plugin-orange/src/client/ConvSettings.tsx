@@ -22,6 +22,13 @@ export function ConvSettings({ conv, session }: { conv: Conv, session: string | 
       <section className={css.section}>
         <h4>响应</h4>
         <Field label="白名单" hint="允许 @、/ai、回复触发"><Switch label="白名单" checked={g.whitelisted} onChange={(v) => save({ whitelisted: v })} /></Field>
+        <Field label="触发限制" hint="白名单下谁能触发（机器人管理员始终可以；旁听不受影响）">
+          <select className={css.text} value={g.triggerLimit ?? 'all'} onChange={(e) => save({ triggerLimit: e.target.value as Group['triggerLimit'] })}>
+            <option value="all">所有人</option>
+            <option value="groupAdmin">仅群主 + 群管理员</option>
+            <option value="botAdmin">仅机器人管理员/开发者</option>
+          </select>
+        </Field>
         <Field label="旁听" hint="分类器判断相关时主动参与"><Switch label="旁听" checked={g.listen} onChange={(v) => save({ listen: v })} /></Field>
         <Field label="Dry run" hint="照常思考，但不真正发出"><Switch label="Dry run" checked={g.dryRun} onChange={(v) => save({ dryRun: v })} /></Field>
       </section>
