@@ -59,7 +59,8 @@
   "scripts": {
     "build": "node build.mjs",
     "prepare": "node build.mjs",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "test:bg": "node --experimental-transform-types test/bg-list.test.ts"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
