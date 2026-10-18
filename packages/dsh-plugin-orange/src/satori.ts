@@ -470,20 +470,30 @@ export class CrossgramClient extends SatoriClient {
   /** Effective prefix; the bot refreshes it from settings before each send. */
   sendPrefix = CrossgramClient.PREFIX
 
-  protected eventsUrl(): string { return this.cfg.endpoint.replace(/^http/, 'ws') + '/orange/events' }
-  protected identify(ws: WebSocket): void { ws.send(JSON.stringify({ token: this.cfg.token })) }
-  protected ping(ws: WebSocket): void { if (ws.readyState === WebSocket.OPEN) ws.ping() }
+  protected eventsUrl(): string { return this.cfg.endpoint.replace(/^http/, 'ws') + '/v1/events' }
+  protected identify(ws: WebSocket): void { ws.send(JSON.stringify({ op: 3, body: { token: this.cfg.token } })) }
 
   protected handleFrame(frame: any): void {
-    if (frame.type === 'ready') {
-      if (frame.selfId) { this.selfId = String(frame.selfId); this.onSelfId?.(this.selfId) }
-      this.loginId = frame.loginId ? String(frame.loginId) : this.selfId
+    if (frame.op === 4) {
+      // The exporter registers this userbot under its numeric QQ id, so the Satori
+      // login id doubles as the self id: senders, mentions, and `@me` detection all
+      // stay in the numeric space the events below use.
+      const login = frame.body?.logins?.find((l: any) => l.platform === 'qq')
+      const id = login?.self_id ?? login?.user?.id
+      if (id) { this.selfId = String(id); this.loginId = this.selfId; this.onSelfId?.(this.selfId) }
+      else this.log('warn', 'cg ready without a login id: @-mentions stay disabled')
       this.onStatus?.('ready')
       this.log('info', `cg ready selfId=${this.selfId} login=${this.loginId}`)
       return
     }
-    if (frame.type !== 'message') return
-    const { conversation, message } = frame
+    if (frame.op !== 0) return
+    const body = frame.body
+    this.nextSeq(body.sn)
+    if (body.type !== 'orange-message') return
+    // `_payload` bypasses the Satori wire's snake_case key transform, so the
+    // rendered shape below keeps its original camelCase fields.
+    const { conversation, message, outgoing } = body._payload ?? {}
+    if (!conversation || !message) return
     const media: MediaRef[] = []
     const forwards: InboundMessage['forwards'] = []
     let mentionsSelf = false
@@ -522,7 +532,7 @@ export class CrossgramClient extends SatoriClient {
       platform: 'cg', conv: `cg:${conversation.id}`, channelId: String(conversation.id), direct, title: conversation.title ?? '',
       id: String(message.id), senderId: String(message.senderId), senderName: String(message.senderTitle || message.senderName || message.senderId), senderAvatar: message.senderAvatar,
       ts: message.timestamp, text, raw: message, replyTo: message.replyToId, mentionsSelf,
-      self: !!frame.outgoing || message.senderId === this.selfId, media, forwards,
+      self: !!outgoing || message.senderId === this.selfId, media, forwards,
     })
   }
 

@@ -31,6 +31,13 @@ const MAX_BODY = 64 * 1024
 /** Largest sticker this route will inline as base64 (the CDN URL is preferred). */
 const MAX_STICKER_BYTES = 12 * 1024 * 1024
 
+/** Structural slice of `@satorijs/core`'s Bot: enough to dispatch custom events. */
+interface SatoriBot {
+  platform: string
+  session(payload: Record<string, unknown>): unknown
+  dispatch(session: unknown): void
+}
+
 function qqMessageSequenceFromMetadata(metadata?: Record<string, unknown>): number | undefined {
   const value = metadata?.qqMsgSeq
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined
@@ -254,59 +261,36 @@ export function apply(ctx: Context, config: Config) {
 
   // Live feed of every committed message, including this account's own outgoing ones
   // (satori-exporter drops those, but the userbot account is also the admin's account).
-  const clients = new Set<any>()
-  ctx.server.ws(`${prefix}/events`, async (_req: any, accept: () => Promise<any>) => {
-    const socket = await accept()
-    let authed = false
-    const timer = setTimeout(() => { if (!authed) socket.close(4001, 'auth timeout') }, 5000)
-    socket.on('message', (data: any) => {
-      if (authed) return
-      try {
-        const body = JSON.parse(String(data))
-        if (body?.token !== config.token) { socket.close(4004, 'invalid token'); return }
-        authed = true
-        clearTimeout(timer)
-        clients.add(socket)
-        const session = binding().session
-        // Two ids matter and they are not the same one: `selfId` is the platform's
-        // opaque user id (what mentions and message senders use — the client needs it
-        // to recognize "@me"), while the Satori API authenticates a request with the
-        // *login* id, which satori-exporter registers as a numeric QQ id when the
-        // adapter knows one (see its `session.metadata.qq`). Reporting only the
-        // opaque id makes every send fail with "login not found".
-        socket.send(JSON.stringify({
-          type: 'ready',
-          // ponytail: prefer the numeric QQ id for selfId too — senders and
-          // mentions are numeric-first (below), so @-detection and self-echo
-          // matching keep working on one id space; opaque uid stays as fallback.
-          selfId: typeof session.metadata?.qq === 'string' && session.metadata.qq ? session.metadata.qq : session.userId,
-          loginId: typeof session.metadata?.qq === 'string' && session.metadata.qq ? session.metadata.qq : session.userId,
-        }))
-      } catch { socket.close(4000, 'bad frame') }
-    })
-    socket.on('close', () => { clearTimeout(timer); clients.delete(socket) })
-  })
-  const ping = setInterval(() => { for (const socket of clients) { try { socket.ping() } catch {} } }, 20_000)
-  ctx.effect(() => () => { clearInterval(ping); for (const socket of clients) socket.close() })
+  // Rides the standard Satori event socket as a custom `orange-message` event. The
+  // `_payload` field crosses the Satori wire untouched (underscore keys are exempt
+  // from the snake_case transform), so the client reads the rendered shape as-is.
+  let bot: SatoriBot | undefined
+  const trackBot = (candidate: unknown) => {
+    if ((candidate as SatoriBot).platform === 'qq') bot = candidate as SatoriBot
+  }
+  for (const candidate of (ctx as any).bots ?? []) trackBot(candidate)
+  ctx.on('bot-added' as any, trackBot)
+  ctx.on('bot-removed' as any, (candidate: unknown) => { if (candidate === bot) bot = undefined })
 
   let seen = 0
-  route('debug', async () => ({ seen, clients: clients.size }))
+  route('debug', async () => ({ seen }))
   ctx.on('im-platform/event-committed' as any, (session: PlatformSession, committed: any) => {
     seen++
     if (session.platformId !== config.platformId || committed.event.type !== 'message' || !committed.result?.created) return
-    if (!clients.size) return
+    if (!bot) return
     const found = ctx.imPlatform.sessions.find((item) => item.session.platformSessionId === session.platformSessionId)
     if (!found) return
     const conversation = committed.event.conversation
     const message = committed.event.message
     void render(found.platform, session, message).then((rendered) => {
-      const frame = JSON.stringify({
-        type: 'message',
-        conversation: { id: conversation.id, kind: conversation.kind, title: conversation.title },
-        message: rendered,
-        outgoing: !!message.outgoing,
-      })
-      for (const socket of clients) { try { socket.send(frame) } catch {} }
+      bot?.dispatch(bot.session({
+        type: 'orange-message',
+        _payload: {
+          conversation: { id: conversation.id, kind: conversation.kind, title: conversation.title },
+          message: rendered,
+          outgoing: !!message.outgoing,
+        },
+      }))
     }).catch((error) => logger.warn('feed render failed: %s', error instanceof Error ? error.message : String(error)))
   }, { global: true } as any)
 
