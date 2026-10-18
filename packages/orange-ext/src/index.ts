@@ -264,20 +264,19 @@ export function apply(ctx: Context, config: Config) {
   // Rides the standard Satori event socket as a custom `orange-message` event. The
   // `_payload` field crosses the Satori wire untouched (underscore keys are exempt
   // from the snake_case transform), so the client reads the rendered shape as-is.
-  let bot: SatoriBot | undefined
-  const trackBot = (candidate: unknown) => {
-    if ((candidate as SatoriBot).platform === 'qq') bot = candidate as SatoriBot
-  }
-  for (const candidate of (ctx as any).bots ?? []) trackBot(candidate)
-  ctx.on('bot-added' as any, trackBot)
-  ctx.on('bot-removed' as any, (candidate: unknown) => { if (candidate === bot) bot = undefined })
+  // `bot-added` fires from the Bot constructor before `platform` is assigned, so a
+  // cached reference cannot be filtered by platform at event time — resolve the
+  // exporter bot from `ctx.bots` on every message instead.
+  const qqBot = (): SatoriBot | undefined =>
+    ((ctx as any).bots ?? []).find((candidate: SatoriBot) => candidate.platform === 'qq')
 
   let seen = 0
-  route('debug', async () => ({ seen }))
+  route('debug', async () => ({ seen, bot: Boolean(qqBot()) }))
   ctx.on('im-platform/event-committed' as any, (session: PlatformSession, committed: any) => {
     seen++
     if (session.platformId !== config.platformId || committed.event.type !== 'message' || !committed.result?.created) return
-    if (!bot) return
+    const bot = qqBot()
+    if (!bot) { logger.warn('message skipped: no qq bot in ctx.bots'); return }
     const found = ctx.imPlatform.sessions.find((item) => item.session.platformSessionId === session.platformSessionId)
     if (!found) return
     const conversation = committed.event.conversation
