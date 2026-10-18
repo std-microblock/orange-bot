@@ -25,7 +25,7 @@ export const Config: z<Config> = z.object({
 })
 
 export const name = 'orange-ext'
-export const inject = ['server', 'imPlatform', 'imSticker']
+export const inject = ['server', 'imPlatform', 'imSticker', 'satori']
 
 const MAX_BODY = 64 * 1024
 /** Largest sticker this route will inline as base64 (the CDN URL is preferred). */
