@@ -202,6 +202,16 @@ export function GlobalSettings() {
             </section>
             <section className={css.section}><h4>主人的项目 · 可主动答疑、修 bug、开 PR</h4><ItemList items={s.ownProjects} repo onChange={(v) => setS({ ...s, ownProjects: v })} /></section>
             <section className={css.section}><h4>可以帮忙的话题 · 只在有把握时回答</h4><ItemList items={s.assistTopics} repo={false} onChange={(v) => setS({ ...s, assistTopics: v })} /></section>
+            <section className={css.section}><h4>人设 Prompt · 改完保存即生效，不用重启</h4>
+              <div className={css.card}>
+                <Field label="聊天 agent" hint="聊天 agent 系统提示的主体；保存后下一条消息就用新文本。清空保存 = 恢复内置版本">
+                  <textarea className={css.input} rows={14} style={{ fontSize: 12 }} value={s.prompts?.chat ?? ''} onChange={(e) => setS({ ...s, prompts: { chat: e.target.value, task: s.prompts?.task ?? '' } })} />
+                </Field>
+                <Field label="后台任务 agent" hint="任务 worker 的系统提示；同样即时生效，清空保存 = 恢复内置版本">
+                  <textarea className={css.input} rows={10} style={{ fontSize: 12 }} value={s.prompts?.task ?? ''} onChange={(e) => setS({ ...s, prompts: { chat: s.prompts?.chat ?? '', task: e.target.value } })} />
+                </Field>
+              </div>
+            </section>
             <section className={css.section}><h4>人设附加</h4>
               <textarea className={css.input} rows={5} value={s.personaExtra} placeholder="追加到聊天 agent 系统提示末尾" onChange={(e) => setS({ ...s, personaExtra: e.target.value })} />
             </section>

@@ -262,6 +262,7 @@ export class Store {
         // (or with an emptied sub-style pool) must not lose the defaults wholesale
         style: { ...structuredClone(DEFAULT_SETTINGS.style), ...stored.style },
         taskModels: { ...DEFAULT_SETTINGS.taskModels, ...stored.taskModels },
+        prompts: { ...DEFAULT_SETTINGS.prompts, ...stored.prompts },
         stickers,
       }
       if (stored.ownProjects) this.settingsCache.ownProjects = backfillProjects(stored.ownProjects)

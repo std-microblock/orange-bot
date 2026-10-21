@@ -1717,8 +1717,8 @@ export class OrangeBot {
     sp.section({
       name: 'orange:role', order: 900, interpolate: false,
       text: () => role === 'chat'
-        ? `${CHAT_PERSONA}\n\n你负责的会话：${conv}（${this.store.convTitle(conv)}）\n主人的项目：${settings.ownProjects.map(projectBrief).join('、')}\n子仓库（同一产品的独立仓库，比如客户端和平台 patcher）用 project_repos 查完整清单，别猜路径\n${this.store.settings().personaExtra}`
-        : `${TASK_PERSONA}\n\n来源会话：${conv}（${this.store.convTitle(conv)}）`,
+        ? `${this.store.settings().prompts.chat || CHAT_PERSONA}\n\n你负责的会话：${conv}（${this.store.convTitle(conv)}）\n主人的项目：${settings.ownProjects.map(projectBrief).join('、')}\n子仓库（同一产品的独立仓库，比如客户端和平台 patcher）用 project_repos 查完整清单，别猜路径\n${this.store.settings().personaExtra}`
+        : `${this.store.settings().prompts.task || TASK_PERSONA}\n\n来源会话：${conv}（${this.store.convTitle(conv)}）`,
     })
     // The style rule is global and read fresh each turn, so editing it in the panel
     // reaches the running sessions; the sub-styles stay out of the prompt on purpose

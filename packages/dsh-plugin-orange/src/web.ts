@@ -8,6 +8,7 @@ import { readFile } from 'node:fs/promises'
 import type { OrangeBot } from './bot.ts'
 import { sniffImage as sniff } from './bot.ts'
 import { humanText, plainText } from './markup.ts'
+import { CHAT_PERSONA, TASK_PERSONA } from './prompts.ts'
 import { PRICE } from './store.ts'
 
 const PREFIX = '/orange-api'
@@ -62,7 +63,10 @@ export function registerWebApi(ctx: any, getBot: () => OrangeBot | undefined): v
         for (const key of Object.keys(settings.groups)) {
           if (!conversations.some((c) => c.key === key)) conversations.push({ key, platform: key.slice(0, 2) as any, channelId: key.slice(3), title: bot.store.convTitle(key), avatar: bot.store.convAvatar(key), direct: false, lastTs: 0, count: 0, settings: bot.store.group(key) })
         }
-        return json(res, 200, { status: bot.status, conversations, settings, price: PRICE })
+        // The panel shows prompts as the *effective* text: the stored '' would be
+        // an empty textarea, and the built-in it stands for is what you tune from.
+        const withDefaults = { ...settings, prompts: { chat: settings.prompts.chat || CHAT_PERSONA, task: settings.prompts.task || TASK_PERSONA } }
+        return json(res, 200, { status: bot.status, conversations, settings: withDefaults, price: PRICE })
       }
       if (req.method === 'GET' && path === '/messages') {
         const conv = q.get('conv') ?? ''
@@ -161,6 +165,13 @@ export function registerWebApi(ctx: any, getBot: () => OrangeBot | undefined): v
       }
       if (req.method === 'POST' && path === '/settings') {
         const body = await readBody(req)
+        // The body carries the effective prompt text (see /overview): saving it
+        // unchanged (or clearing the box) stores '' = follow the built-in, so
+        // later code updates keep improving the persona until overridden.
+        if (body.prompts) body.prompts = {
+          chat: !String(body.prompts.chat ?? '').trim() || body.prompts.chat === CHAT_PERSONA ? '' : String(body.prompts.chat),
+          task: !String(body.prompts.task ?? '').trim() || body.prompts.task === TASK_PERSONA ? '' : String(body.prompts.task),
+        }
         bot.store.saveSettings({ ...bot.store.settings(), ...body })
         bot.broadcast({ type: 'settings' })
         return json(res, 200, bot.store.settings())

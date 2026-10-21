@@ -191,6 +191,12 @@ export interface RuntimeSettings {
   taskModels: { fast: string, quality: string }
   /** Extra persona text appended to the chat agent prompt. */
   personaExtra: string
+  /**
+   * Persona prompt overrides, editable from the panel so prompt tuning needs no
+   * rebuild+redeploy. Empty string = the built-in text from prompts.ts, which
+   * keeps code-side prompt improvements effective until the operator overrides.
+   */
+  prompts: { chat: string, task: string }
   /** Speaking style: one global main style plus per-send random sub-styles. */
   style: StyleSettings
   /** Sticker/表情 pool: the type list, the segment auto-表情 and the classifier model. */
@@ -275,6 +281,7 @@ export const DEFAULT_SETTINGS: RuntimeSettings = {
   wakeMergeMs: 2000,
   taskModels: { fast: '', quality: '' },
   personaExtra: '',
+  prompts: { chat: '', task: '' },
   style: {
     enabled: true,
     main: 'IM 交流风：每句话尽可能简短，可以用空格代替逗号、句号等，避免使用冗余专有名词，可以用「」作为引用，避免使用「不是…而是…」这类句式',
