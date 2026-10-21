@@ -33,6 +33,9 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
-    ]
+    ],
+    "overrides": {
+      "@deepseek-ai/dsh-llm": "0.2.1-rc.2"
+    }
   }
 }

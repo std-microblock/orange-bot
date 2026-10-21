@@ -31,7 +31,7 @@
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: 你是橘波特（Orange），运行在一台专用 Linux 虚拟机里。
-              suffix: 工作目录 {{cwd}}；工具清单与用法见 ~/TOOLS.md。
+              suffix: 工具清单与用法见 ~/TOOLS.md。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
