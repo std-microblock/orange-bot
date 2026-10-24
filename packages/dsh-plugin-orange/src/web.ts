@@ -65,7 +65,13 @@ export function registerWebApi(ctx: any, getBot: () => OrangeBot | undefined): v
         }
         // The panel shows prompts as the *effective* text: the stored '' would be
         // an empty textarea, and the built-in it stands for is what you tune from.
-        const withDefaults = { ...settings, prompts: { chat: settings.prompts.chat || CHAT_PERSONA, task: settings.prompts.task || TASK_PERSONA } }
+        // Same for the classifier model: show what actually runs, not a hardcoded
+        // guess at the deployment's fallback.
+        const withDefaults = {
+          ...settings,
+          prompts: { chat: settings.prompts.chat || CHAT_PERSONA, task: settings.prompts.task || TASK_PERSONA },
+          classifierModel: settings.classifierModel || bot.config.llm.classifierModel || bot.config.llm.model,
+        }
         return json(res, 200, { status: bot.status, conversations, settings: withDefaults, price: PRICE })
       }
       if (req.method === 'GET' && path === '/messages') {
@@ -171,6 +177,12 @@ export function registerWebApi(ctx: any, getBot: () => OrangeBot | undefined): v
         if (body.prompts) body.prompts = {
           chat: !String(body.prompts.chat ?? '').trim() || body.prompts.chat === CHAT_PERSONA ? '' : String(body.prompts.chat),
           task: !String(body.prompts.task ?? '').trim() || body.prompts.task === TASK_PERSONA ? '' : String(body.prompts.task),
+        }
+        // Saving the classifier model unchanged (or clearing it) stores '' = the
+        // deployment's own fallback, so a later cordis config change still applies.
+        if (body.classifierModel !== undefined) {
+          const fallback = bot.config.llm.classifierModel || bot.config.llm.model
+          body.classifierModel = !String(body.classifierModel).trim() || body.classifierModel === fallback ? '' : String(body.classifierModel)
         }
         bot.store.saveSettings({ ...bot.store.settings(), ...body })
         bot.broadcast({ type: 'settings' })
