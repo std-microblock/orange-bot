@@ -262,6 +262,7 @@ export class Store {
         // (or with an emptied sub-style pool) must not lose the defaults wholesale
         style: { ...structuredClone(DEFAULT_SETTINGS.style), ...stored.style },
         taskModels: { ...DEFAULT_SETTINGS.taskModels, ...stored.taskModels },
+        classifierModel: stored.classifierModel ?? '',
         prompts: { ...DEFAULT_SETTINGS.prompts, ...stored.prompts },
         stickers,
       }

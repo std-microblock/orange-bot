@@ -189,6 +189,11 @@ export interface RuntimeSettings {
    * agentModel, which is also what the default tier always uses.
    */
   taskModels: { fast: string, quality: string }
+  /**
+   * Model for the wake classifier and the inbound screen. Empty = the static
+   * llm.classifierModel from the cordis patch (then llm.model).
+   */
+  classifierModel: string
   /** Extra persona text appended to the chat agent prompt. */
   personaExtra: string
   /**
@@ -280,6 +285,7 @@ export const DEFAULT_SETTINGS: RuntimeSettings = {
   sessionIdleMs: 2 * 3600_000,
   wakeMergeMs: 2000,
   taskModels: { fast: '', quality: '' },
+  classifierModel: '',
   personaExtra: '',
   prompts: { chat: '', task: '' },
   style: {

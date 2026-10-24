@@ -1302,7 +1302,7 @@ export class OrangeBot {
     const toSeq = lastSeq
     // Transient gateway failures (502/503/429, network hiccups) are retried inside
     // chat(), with the attempt logged instead of reported.
-    const classifierLlm = { ...this.config.llm, model: this.config.llm.classifierModel ?? this.config.llm.model }
+    const classifierLlm = { ...this.config.llm, model: this.classifierModel() }
     const result = await chat(classifierLlm, [{ role: 'system', content: system }, { role: 'user', content: transcript }], {
       json: true,
       maxTokens: 2000,
@@ -1372,7 +1372,7 @@ export class OrangeBot {
 
   /** Decide whether to engage at all; a blocked message never enters any session. */
   private async screenedWake(conv: string, trigger: TriggerKind, message: InboundMessage, reason?: string): Promise<void> {
-    const verdict = await screenTrigger({ ...this.config.llm, model: this.config.llm.classifierModel ?? this.config.llm.model }, {
+    const verdict = await screenTrigger({ ...this.config.llm, model: this.classifierModel() }, {
       text: message.text,
       senderName: message.senderName,
       replyToBot: message.replyTo ? this.store.byId(message.conv, message.replyTo)?.fromBot === true : false,
@@ -1678,7 +1678,10 @@ export class OrangeBot {
     const handle = await ctx.agents.create({
       sessionId,
       meta: { cwd: workspace.path, agentPreset: presetId },
-      agentOptions: { provider: this.config.llm.provider, model: model || this.config.llm.agentModel },
+      // No explicit model (unset tier) → omit the field entirely so dsh's own
+      // agent-default-model decides; overriding it here would silently pin every
+      // task to the static llm.agentModel from the cordis patch.
+      agentOptions: { provider: this.config.llm.provider, ...(model ? { model } : {}) },
       setup: async (agentCtx: any) => {
         await ctx.agentPresets.mount(agentCtx, presetId)
         this.decorate(agentCtx, role, conv)
@@ -1701,7 +1704,10 @@ export class OrangeBot {
     const model = this.store.get<{ model?: string } | undefined>(`role:${sessionId}`, undefined)?.model
     const handle = await ctx.agents.resume({
       resumeSessionId: sessionId,
-      agentOptions: { provider: this.config.llm.provider, model: model || this.config.llm.agentModel },
+      // No explicit model (unset tier) → omit the field entirely so dsh's own
+      // agent-default-model decides; overriding it here would silently pin every
+      // task to the static llm.agentModel from the cordis patch.
+      agentOptions: { provider: this.config.llm.provider, ...(model ? { model } : {}) },
       setup: async (agentCtx: any) => {
         await ctx.agentPresets.mount(agentCtx, this.config.agentPreset)
         this.decorate(agentCtx, role, conv)
@@ -1783,6 +1789,11 @@ export class OrangeBot {
       if (scope.startsWith('user:')) return senders.has(scope.slice(5))
       return false
     }).slice(0, limit)
+  }
+
+  /** Classifier/inbound-screen model: the panel override wins, then the cordis config, then llm.model. */
+  private classifierModel(): string {
+    return this.store.settings().classifierModel || this.config.llm.classifierModel || this.config.llm.model
   }
 
   /** Background worker session for a task; returns the task id. */

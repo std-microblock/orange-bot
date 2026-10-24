@@ -502,7 +502,7 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
       title: { type: 'string', required: true, description: 'Short title.' },
       kind: { type: 'string', enum: ['bugfix', 'feature', 'research', 'other'], required: true },
       repo: { type: 'string', description: 'owner/name if it concerns a repository.' },
-      tier: { type: 'string', enum: ['default', 'fast', 'quality'], description: 'Worker model tier: quality for writing/fixing code and PRs (correctness matters), fast for research/lookup/quick answers (speed matters), default when unsure — the panel maps tiers to concrete models, unset tiers follow the global agent model.' },
+      tier: { type: 'string', enum: ['fast', 'quality'], description: 'Worker model tier: quality for writing/fixing code and PRs (correctness matters), fast for research/lookup/quick answers (speed matters). The panel maps tiers to concrete models.' },
       brief: { type: 'string', required: true, description: 'Everything the worker needs: the report, versions, logs (#seq refs), what the user expects, and what to deliver.' },
     },
     output: TEXT_OUT,
