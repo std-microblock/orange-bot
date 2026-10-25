@@ -1670,18 +1670,30 @@ export class OrangeBot {
     }
   }
 
+  /**
+   * The provider/model pair every agent must carry (the agent loop rejects a
+   * request without both, and nothing backfills them for programmatic sessions —
+   * agent-default-model only serves the GUI): an explicit tier model wins, then
+   * the dsh-wide default selection, then the static cordis config.
+   */
+  private agentModelOptions(model?: string): { provider: string, model: string } {
+    if (model) return { provider: this.config.llm.provider, model }
+    const sel = (this.ctx as any).agentDefaultModel?.currentSelection?.()
+    if (sel?.provider && sel?.model) return { provider: sel.provider, model: sel.model }
+    return { provider: this.config.llm.provider, model: this.config.llm.agentModel }
+  }
+
   /** Create a GUI-visible session in the orange workspace with our preset mounted. */
   async createAgent(sessionId: string, role: 'chat' | 'task', title: string, conv: string, admin = false, model?: string): Promise<any> {
     const ctx = this.ctx as any
     const workspace = await ctx.workspaceRegistry.create(this.config.workspace)
     const presetId = this.config.agentPreset
+    const opts = this.agentModelOptions(model)
+    this.log.info(`agent ${sessionId}: ${opts.provider}/${opts.model}`)
     const handle = await ctx.agents.create({
       sessionId,
       meta: { cwd: workspace.path, agentPreset: presetId },
-      // No explicit model (unset tier) → omit BOTH fields so dsh's agent-default-model
-      // decides; a lone provider fails the provider/model pair check, and overriding
-      // both here would silently pin every task to the static llm.agentModel.
-      agentOptions: model ? { provider: this.config.llm.provider, model } : {},
+      agentOptions: opts,
       setup: async (agentCtx: any) => {
         await ctx.agentPresets.mount(agentCtx, presetId)
         this.decorate(agentCtx, role, conv)
@@ -1704,10 +1716,7 @@ export class OrangeBot {
     const model = this.store.get<{ model?: string } | undefined>(`role:${sessionId}`, undefined)?.model
     const handle = await ctx.agents.resume({
       resumeSessionId: sessionId,
-      // No explicit model (unset tier) → omit BOTH fields so dsh's agent-default-model
-      // decides; a lone provider fails the provider/model pair check, and overriding
-      // both here would silently pin every task to the static llm.agentModel.
-      agentOptions: model ? { provider: this.config.llm.provider, model } : {},
+      agentOptions: this.agentModelOptions(model),
       setup: async (agentCtx: any) => {
         await ctx.agentPresets.mount(agentCtx, this.config.agentPreset)
         this.decorate(agentCtx, role, conv)
