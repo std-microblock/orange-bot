@@ -6,6 +6,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { extname, join } from 'node:path'
 import type { Config, GroupSettings, OwnProject } from './config.ts'
@@ -1720,6 +1721,11 @@ export class OrangeBot {
     return handle.agent
   }
 
+  /** dataDir/AGENTS.md contents, '' when the file is absent. */
+  private globalInstructions(): string {
+    try { return readFileSync(join(this.config.dataDir, 'AGENTS.md'), 'utf8') } catch { return '' }
+  }
+
   /** Role prompt sections (the tools themselves come from the orange preset). */
   decorate(agentCtx: any, role: 'chat' | 'task', conv: string): void {
     const sp = agentCtx.systemPrompt
@@ -1729,6 +1735,14 @@ export class OrangeBot {
       text: () => role === 'chat'
         ? `${this.store.settings().prompts.chat || CHAT_PERSONA}\n\n你负责的会话：${conv}（${this.store.convTitle(conv)}）\n主人的项目：${settings.ownProjects.map(projectBrief).join('、')}\n子仓库（同一产品的独立仓库，比如客户端和平台 patcher）用 project_repos 查完整清单，别猜路径\n${this.store.settings().personaExtra}`
         : `${this.store.settings().prompts.task || TASK_PERSONA}\n\n来源会话：${conv}（${this.store.convTitle(conv)}）`,
+    })
+    // Global operator instructions (dataDir/AGENTS.md): apply to every session no
+    // matter which workspace it runs in — per-group workspaces stay isolated, these
+    // rules do not. Read fresh each turn so editing the file reaches running
+    // sessions without a reset. interpolate:false — file content is verbatim.
+    sp.section({
+      name: 'orange:agents', order: 905, interpolate: false,
+      text: () => this.globalInstructions(),
     })
     // The style rule is global and read fresh each turn, so editing it in the panel
     // reaches the running sessions; the sub-styles stay out of the prompt on purpose
