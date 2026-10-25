@@ -1,16 +1,17 @@
 /**
- * Satori bridge. Two adapters normalize koishi (QQ official bot, `qq:`) and
- * crossgram (userbot, `cg:`) into one message model. Conversation keys are
- * `qq:<group_openid|user_openid>` and `cg:<group number|user id>`; ids from one
- * platform are never valid on the other.
+ * Satori bridge. Adapters normalize their platform into one message model, keyed
+ * `<platform>:<channel id>`. Two are wired in with all their quirks — koishi
+ * (QQ official bot, `qq:`) and crossgram (userbot, `cg:`) — and any further
+ * Satori endpoint runs on the standard-protocol client below (StandardSatoriClient);
+ * ids from one platform are never valid on another.
  */
 import WebSocket from 'ws'
 import h from '@satorijs/element'
-import type { SatoriEndpoint } from './config.ts'
+import type { PlatformEntry, SatoriEndpoint } from './config.ts'
 import { foldMentions, markdownDropsQuote } from './qq.ts'
 import { bundlePreview, forwardPlaceholder, mediaTag, parseForwardDump, type BundleItem } from './media.ts'
 
-export type PlatformKey = 'qq' | 'cg'
+export type PlatformKey = string
 
 /**
  * A group role that matters to the bot: the owner (群主) and the administrators
@@ -139,7 +140,7 @@ type Listener = (message: InboundMessage) => void
 
 const MAX_BACKOFF = 60_000
 
-abstract class SatoriClient {
+export abstract class SatoriClient {
   selfId = ''
   /**
    * The id the Satori API authenticates with, when it differs from `selfId`:
@@ -164,6 +165,9 @@ abstract class SatoriClient {
   onMedia?: MediaSink
 
   constructor(readonly platform: PlatformKey, protected readonly cfg: SatoriEndpoint, protected readonly log: (level: 'info' | 'warn', msg: string) => void) {}
+
+  /** Wire platform name for the Satori API header; the built-ins are all `qq`. */
+  protected apiPlatform = 'qq'
 
   /** Binds this client's media sink to the message currently being rendered. */
   protected mediaSink(context: Omit<MediaEntry, keyof MediaSpec>): MediaSpecSink | undefined {
@@ -235,7 +239,7 @@ abstract class SatoriClient {
       headers: {
         'Authorization': `Bearer ${this.cfg.token}`,
         'Content-Type': 'application/json',
-        'Satori-Platform': 'qq',
+        'Satori-Platform': this.apiPlatform,
         // The Satori server looks the bot up by this id, and it is not always the
         // platform's opaque user id: crossgram registers the userbot under its
         // numeric QQ id when the adapter knows one (see `loginId` in the ready frame).
@@ -586,6 +590,86 @@ export class CrossgramClient extends SatoriClient {
   forward(locator: unknown): Promise<any[]> { return this.ext('forward.get', { locator }) }
   history(channelId: string, limit: number, before?: string): Promise<any[]> { return this.ext('history.list', { channelId, limit, before }) }
   message(channelId: string, messageId: string): Promise<any> { return this.ext('message.get', { channelId, messageId }) }
+}
+
+/**
+ * Any plain Satori endpoint (config `platforms` entries, kind `satori`): the
+ * standard protocol with no platform-specific quirks — op 3 identify, op 4 login,
+ * op 0 `message-created` in, `message.create` out. Whatever the adapter renders
+ * as elements is normalized by renderElements like on the qq side, minus the
+ * koishi-only quote folding; markdown degrades to plain text and button rows to
+ * a link list, like the userbot. Capabilities the special clients carry (native
+ * stickers, recall, reactions, role rosters, merged forwards) simply do not
+ * exist here — the bot skips them for platforms it has no ext route for.
+ */
+export class StandardSatoriClient extends SatoriClient {
+  /** Wire `body.platform` frames are filtered by; empty = accept any. */
+  private readonly wirePlatform: string
+
+  constructor(entry: PlatformEntry, log: (level: 'info' | 'warn', msg: string) => void) {
+    super(entry.key, entry, log)
+    this.wirePlatform = entry.protocolPlatform ?? ''
+    this.apiPlatform = this.wirePlatform || entry.key
+  }
+
+  protected eventsUrl(): string { return this.cfg.endpoint.replace(/^http/, 'ws') + '/v1/events' }
+  protected identify(ws: WebSocket): void { ws.send(JSON.stringify({ op: 3, body: { token: this.cfg.token } })) }
+
+  protected handleFrame(frame: any): void {
+    if (frame.op === 4) {
+      const login = frame.body?.logins?.[0]
+      const id = login?.self_id ?? login?.user?.id
+      if (id) { this.selfId = String(id); this.loginId = this.selfId; this.onSelfId?.(this.selfId) }
+      else this.log('warn', `${this.platform} ready without a login id: @-mentions stay disabled`)
+      this.onStatus?.('ready')
+      this.log('info', `${this.platform} ready selfId=${this.selfId}`)
+      return
+    }
+    if (frame.op !== 0) return
+    const body = frame.body
+    this.nextSeq(body.sn)
+    if (body.type !== 'message-created' || !body.message) return
+    if (this.wirePlatform && body.platform !== this.wirePlatform) return
+    const conv = `${this.platform}:${String(body.channel?.id ?? body.guild?.id)}`
+    const messageId = String(body.message.id)
+    const ts = body.timestamp ?? Date.now()
+    const senderName = String(body.member?.nick ?? body.user?.name ?? body.user?.id)
+    const sink = this.mediaSink({ conv, messageId, ts, senderName })
+    const { text, media, mentionsSelf, replyTo } = renderElements(h.parse(body.message.content ?? ''), [this.selfId], sink)
+    // A quote delivered as data instead of elements (koishi-style adapters): fold it
+    // back in so the agent reads the same <quote>…</quote> prefix as everywhere else.
+    const quote = renderQuote(body.message.quote, sink)
+    const inner = quote ? `${quote.senderName ? `${quote.senderName}：` : ''}${quote.text}`.trim() : ''
+    const folded = inner && !text.includes('<quote>') ? `<quote>${inner}</quote> ${text}`.trimEnd() : text
+    const direct = body.channel?.type === 1 || !body.guild
+    this.emit({
+      platform: this.platform, conv, channelId: String(body.channel?.id ?? body.guild?.id), direct,
+      title: body.guild?.name ?? body.channel?.name ?? '',
+      id: messageId, senderId: String(body.user?.id), senderName, senderAvatar: body.user?.avatar,
+      ts, text: folded, raw: body.message, replyTo: body.message.quote?.id ?? replyTo,
+      mentionsSelf, self: String(body.user?.id) === this.selfId,
+      senderRole: direct ? undefined : memberRole(body.member?.roles?.[0]?.id),
+      media, quotedMedia: quote?.media.length ? quote.media : undefined, forwards: [],
+    })
+  }
+
+  async send(channelId: string, _direct: boolean, parts: OutboundPart[]): Promise<string[]> {
+    const content = parts.map((part) => {
+      switch (part.type) {
+        case 'text': return h.escape(part.text ?? '')
+        // no markdown guarantee: degrade, keeping link targets
+        case 'markdown': return h.escape(stripMarkdown(part.text ?? ''))
+        case 'image': return h('img', { src: part.src }).toString()
+        case 'file': return h('file', { src: part.src, title: part.name }).toString()
+        case 'at': return h.at(part.userId!, part.name ? { name: part.name } : {}).toString()
+        case 'quote': return h.quote(part.messageId!).toString()
+        case 'buttons': return h.escape((part.buttons ?? []).flat().filter((b) => b.kind === 'link').map((b) => `\n${b.label}: ${b.data}`).join(''))
+        default: return ''
+      }
+    }).join('')
+    const result = await this.api<{ id: string }[]>('message.create', { channel_id: channelId, content })
+    return (result ?? []).map((r) => r.id)
+  }
 }
 
 /**

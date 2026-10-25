@@ -61,8 +61,8 @@ export function OrangePage({ openSession }: { openSession: (id: string) => void 
             </button>
           ))}
           <div className={css.status}>
-            {(['qq', 'cg'] as const).map((k) => (
-              <div key={k} className={css.statusRow}><span className={`${css.dot} ${status[k] === 'ready' ? css.dotOk : css.dotBad}`} />{k === 'qq' ? '官方 bot' : 'userbot'}<span className={css.statusText}>{status[k] === 'ready' ? '在线' : status[k] ?? '…'}</span></div>
+            {Object.keys(status).map((k) => (
+              <div key={k} className={css.statusRow}><span className={`${css.dot} ${status[k] === 'ready' ? css.dotOk : css.dotBad}`} />{k === 'qq' ? '官方 bot' : k === 'cg' ? 'userbot' : k}<span className={css.statusText}>{status[k] === 'ready' ? '在线' : status[k] ?? '…'}</span></div>
             ))}
           </div>
         </nav>

@@ -11,11 +11,35 @@ export interface SatoriEndpoint {
   token: string
 }
 
+/** One connected platform: a conversation-key prefix and the client that serves it. */
+export interface PlatformEntry {
+  /**
+   * Conversation-key prefix and panel id, e.g. `qq`, `cg`, `tg`. Exactly two
+   * chars (a-z0-9): conversation keys are parsed by prefix length everywhere
+   * (`conv.slice(0, 2)` / `conv.slice(3)`), and `qq`/`cg` are taken.
+   */
+  key: string
+  /** `qq-official` | `crossgram` | `satori` — which SatoriClient subclass to build. */
+  kind: 'qq-official' | 'crossgram' | 'satori'
+  endpoint: string
+  token: string
+  /** Wire `body.platform` this adapter declares; empty = accept any. */
+  protocolPlatform?: string
+}
+
 export interface Config {
   dataDir: string
   workspace: string
   koishi: SatoriEndpoint
   crossgram: SatoriEndpoint
+  /**
+   * Extra Satori endpoints beyond the two built-ins. `kind` picks the client:
+   * `qq-official` (koishi @satorijs/adapter-qq) and `crossgram` (userbot exporter)
+   * are the wired-in pair; `satori` is the standard-protocol client that covers
+   * any plain Satori adapter. Empty/absent = the classic koishi + crossgram pair,
+   * so existing deployments change nothing until they opt in.
+   */
+  platforms?: PlatformEntry[]
   /** classifierModel overrides llm.model for the wake classifier and the inbound screen only. */
   llm: { baseURL: string, apiKey: string, model: string, classifierModel?: string, provider: string, agentModel: string }
   /**
@@ -39,6 +63,14 @@ export const Config: z<Config> = z.object({
   workspace: z.string().required(),
   koishi: z.object({ endpoint: z.string().required(), token: z.string().required() }),
   crossgram: z.object({ endpoint: z.string().required(), token: z.string().required() }),
+  platforms: z.array(z.object({
+    key: z.string().required(),
+    kind: z.string().required(),
+    endpoint: z.string().required(),
+    token: z.string().required(),
+    /** Wire `body.platform` this adapter declares; empty = accept any. */
+    protocolPlatform: z.string().default(''),
+  })).default([]),
   llm: z.object({
     baseURL: z.string().required(),
     apiKey: z.string().required(),

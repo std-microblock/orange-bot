@@ -7,8 +7,8 @@ import { Avatar, Badge, Chips, Empty, usePanel } from './ui.tsx'
 import { ChatView } from './ChatView.tsx'
 import css from './Chats.module.css'
 
-type Filter = 'all' | 'white' | 'qq' | 'cg' | 'dm'
-const FILTERS = [['all', '全部'], ['white', '白名单'], ['qq', '官方'], ['cg', 'userbot'], ['dm', '私聊']] as const
+type Filter = 'all' | 'white' | 'dm' | (string & {})
+const BASE_FILTERS = [['all', '全部'], ['white', '白名单'], ['qq', '官方'], ['cg', 'userbot'], ['dm', '私聊']] as const
 
 const blank = (key: string): Conv => ({ key, platform: key.slice(0, 2) as Conv['platform'], channelId: key.slice(3), title: '', direct: false, lastTs: 0, count: 0, settings: { whitelisted: false, dryRun: false, listen: false, tags: [], note: '' } })
 
@@ -18,6 +18,11 @@ export function Chats() {
   const [filter, setFilter] = useState<Filter>('all')
   const [previews, setPreviews] = useState<Record<string, string>>({})
   useEffect(() => { void api('/previews').then(setPreviews).catch(() => {}) }, [tick])
+  // platforms beyond the built-in pair get their own filter chip, labelled by key
+  const filters = useMemo(() => {
+    const extra = [...new Set(convs.map((c) => c.platform))].filter((p) => p !== 'qq' && p !== 'cg').map((p) => [p, p] as const)
+    return [...BASE_FILTERS, ...extra]
+  }, [convs])
   const list = useMemo(() => convs
     .filter((c) => !q || (c.title + c.key).toLowerCase().includes(q.toLowerCase()))
     .filter((c) => filter === 'all' || (filter === 'white' && c.settings.whitelisted) || (filter === 'dm' && c.direct) || (filter === c.platform && !c.direct))
@@ -28,7 +33,7 @@ export function Chats() {
       <aside className={css.list}>
         <div className={css.listTop}>
           <Input icon={<Search size={14} />} placeholder="搜索群名或 id" value={q} onChange={(e) => setQ(e.target.value)} className={css.search} />
-          <Chips value={filter} options={FILTERS} onChange={setFilter} />
+          <Chips value={filter} options={filters} onChange={setFilter} />
         </div>
         <div className={css.items}>
           {list.map((c) => (
@@ -40,7 +45,7 @@ export function Chats() {
                   <span className={css.preview}>{previews[c.key] ?? (c.direct ? '私聊' : '暂无消息')}</span>
                   {c.settings.dryRun && <Badge tone="warn">dry</Badge>}
                   {c.settings.whitelisted && <Badge tone="ok">白名单</Badge>}
-                  <Badge>{c.platform === 'qq' ? '官' : 'U'}</Badge>
+                  <Badge>{c.platform === 'qq' ? '官' : c.platform === 'cg' ? 'U' : c.platform}</Badge>
                 </span>
               </span>
             </button>

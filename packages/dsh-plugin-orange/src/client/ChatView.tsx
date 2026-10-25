@@ -80,7 +80,7 @@ export function ChatView({ conv }: { conv: Conv }) {
           <Avatar src={conv.avatar} name={convName(conv, conv.key)} seed={conv.key} size={36} square={!conv.direct} />
           <div className={css.headText}>
             <div className={css.title}>{convName(conv, conv.key)}{conv.settings.dryRun && <Badge tone="warn">DRY RUN</Badge>}</div>
-            <div className={css.sub}>{conv.platform === 'qq' ? 'QQ 官方 bot' : 'userbot'}{conv.direct ? ' · 私聊' : ''} · {conv.count} 条{data.groupRoles.length ? <> · {data.groupRoles.map((r) => <span key={r.id} className={css.role} title={`${r.id} — ${r.name}`}>{r.role === 'owner' ? '群主' : '群管'} {r.name}</span>)}</> : null}</div>
+            <div className={css.sub}>{conv.platform === 'qq' ? 'QQ 官方 bot' : conv.platform === 'cg' ? 'userbot' : conv.platform}{conv.direct ? ' · 私聊' : ''} · {conv.count} 条{data.groupRoles.length ? <> · {data.groupRoles.map((r) => <span key={r.id} className={css.role} title={`${r.id} — ${r.name}`}>{r.role === 'owner' ? '群主' : '群管'} {r.name}</span>)}</> : null}</div>
           </div>
           <SessionLink id={data.session} label="agent 会话" />
           <Button size="sm" variant={side ? 'outline' : 'ghost'} icon={<PanelRight size={14} />} onClick={() => setSide(!side)}>设置</Button>

@@ -29,7 +29,7 @@ export interface StoredMessage {
 export interface ConversationRow {
   avatar?: string
   key: string
-  platform: 'qq' | 'cg'
+  platform: string
   channelId: string
   title: string
   /** Where the title came from: 'qq' = official group API, 'cg' = userbot, 'dm' = peer name. */

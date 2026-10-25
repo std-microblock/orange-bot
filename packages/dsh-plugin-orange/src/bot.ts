@@ -11,7 +11,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { extname, join } from 'node:path'
 import type { Config, GroupSettings, OwnProject } from './config.ts'
 import { Store, type MediaRow, type StoredMessage } from './store.ts'
-import { CrossgramClient, QQOfficialClient, memberRole, stripMarkdown, type InboundMessage, type MediaEntry, type MediaRef, type MediaSpec, type MediaSpecSink, type MemberRole, type OutboundPart, type PlatformKey } from './satori.ts'
+import { CrossgramClient, QQOfficialClient, StandardSatoriClient, SatoriClient, memberRole, stripMarkdown, type InboundMessage, type MediaEntry, type MediaRef, type MediaSpec, type MediaSpecSink, type MemberRole, type OutboundPart, type PlatformKey } from './satori.ts'
 import { bundlePreview, forwardPlaceholder, mediaTag, parseForwardDump, type BundleForward, type BundleItem, type BundleMedia } from './media.ts'
 import { PAIR_CONFIRM, PAIR_MIN_CHARS, PAIR_WINDOW_MS, groupAvatar, pairText, senderMatch } from './pairing.ts'
 import { chat, parseJsonLoose } from './llm.ts'
@@ -201,11 +201,13 @@ export class OrangeBot {
   readonly store: Store
   readonly qq: QQOfficialClient
   readonly cg: CrossgramClient
+  /** Every connected platform, the two built-ins first; config `platforms` entries append. */
+  readonly clients: SatoriClient[] = []
   private conv = new Map<string, ConvState>()
   private sessions = new Map<string, ChatSession>()
   /** sessionId -> current turn being served, for send_message routing */
   readonly turns = new Map<string, Turn>()
-  readonly status: Record<PlatformKey, string> = { qq: 'connecting', cg: 'connecting' }
+  readonly status: Record<string, string> = { qq: 'connecting', cg: 'connecting' }
   private errorTimes: number[] = []
   /** Messages we sent on cg, by text, to tell bot vs human on the shared account. */
   private pendingSelfTexts: { conv: string, text: string, sticker?: boolean, label?: string, ts: number }[] = []
@@ -228,13 +230,25 @@ export class OrangeBot {
     const log = (level: 'info' | 'warn', msg: string) => level === 'info' ? this.log.info(msg) : this.log.warn(msg)
     this.qq = new QQOfficialClient('qq', config.koishi, log)
     this.cg = new CrossgramClient('cg', config.crossgram, log)
-    for (const client of [this.qq, this.cg]) {
+    this.clients.push(this.qq, this.cg)
+    for (const e of config.platforms ?? []) {
+      // Conversation keys are parsed by prefix length (conv.slice(0, 2) / slice(3)) all
+      // over the codebase, so a platform key must be exactly that long — and must not
+      // shadow the built-ins.
+      if (!/^[a-z0-9]{2}$/.test(e.key) || e.key === 'qq' || e.key === 'cg') {
+        this.log.warn(`platform entry "${e.key}" skipped: key must be exactly 2 chars (a-z0-9), not qq/cg`)
+        continue
+      }
+      this.clients.push(new StandardSatoriClient(e, log))
+      this.status[e.key] = 'connecting'
+    }
+    for (const client of this.clients) {
       // Self id survives reconnects and restarts: a READY frame may arrive without
       // it, and without it we cannot recognize @-mentions at all.
       client.selfId = this.store.get(`selfId:${client.platform}`, '')
       client.onSelfId = (id) => this.store.set(`selfId:${client.platform}`, id)
     }
-    for (const client of [this.qq, this.cg]) {
+    for (const client of this.clients) {
       client.onStatus = (s) => { this.status[client.platform] = s; this.broadcast({ type: 'status', status: this.status }) }
       client.on((m) => { void this.onMessage(m).catch((e) => this.reportError(`ingest ${m.conv}`, e)) })
       // Every attachment either platform renders gets one id and is printed as `[图片 #12]`
@@ -245,7 +259,7 @@ export class OrangeBot {
   }
 
   start(): void {
-    this.qq.start(); this.cg.start()
+    for (const c of this.clients) c.start()
     void this.refreshKoishiCommands()
     this.koishiTimer = setInterval(() => void this.refreshKoishiCommands(), 10 * 60_000)
     // Earlier builds paired groups on "same text, same moment", which random pairs
@@ -303,7 +317,7 @@ export class OrangeBot {
     clearInterval(this.koishiTimer)
     clearInterval(this.nameTimer)
     clearInterval(this.roleTimer)
-    this.qq.stop(); this.cg.stop()
+    for (const c of this.clients) c.stop()
     for (const state of this.conv.values()) {
       clearTimeout(state.timer)
       state.segments?.stop()
@@ -317,7 +331,7 @@ export class OrangeBot {
     return this.config.admins.includes(`${platform}:${userId}`)
   }
 
-  client(platform: PlatformKey) { return platform === 'qq' ? this.qq : this.cg }
+  client(platform: PlatformKey) { return this.clients.find((c) => c.platform === platform) }
 
   // -------------------------------------------------------------- identities --
   /**
@@ -388,7 +402,7 @@ export class OrangeBot {
   isSelfId(platform: PlatformKey, userId: string): boolean {
     if (!userId) return false
     if (this.store.get(`selfId:${platform}`, '') === userId) return true
-    if ((platform === 'cg' ? this.cg : this.qq).selfId === userId) return true
+    if (this.client(platform)?.selfId === userId) return true
     // the official bot's account, seen through the userbot's view of the same group
     return platform === 'cg' && this.botTwinIds.has(userId)
   }
@@ -411,7 +425,7 @@ export class OrangeBot {
     }
     for (const row of this.store.senders(conv, 500)) add(row.id, row.name, this.isSelfId(platform, row.id))
     for (const row of this.store.memberRoles(conv)) add(row.userId, this.store.user(`${conv.slice(0, 2)}:${row.userId}`)?.name, this.isSelfId(platform, row.userId))
-    for (const id of [this.qq.selfId, this.cg.selfId, ...this.botTwinIds]) add(id, '橘波特', true)
+    for (const id of [...this.clients.map((c) => c.selfId), ...this.botTwinIds]) add(id, '橘波特', true)
     return out
   }
 
@@ -2009,7 +2023,9 @@ export class OrangeBot {
         if (sentText || hasSticker) this.pendingSelfTexts.push({ conv, text: sentText, sticker: hasSticker, label: hasSticker ? stickerText : undefined, ts: Date.now() })
       }
       this.cg.sendPrefix = this.store.settings().botEmojiPrefix ? CrossgramClient.PREFIX : ''
-      const ids = await this.client(platform).send(channelId, direct, resolved, opts.replyTo ?? state.lastInbound)
+      const client = this.client(platform)
+      if (!client) throw new Error(`unknown platform "${platform}" (no client registered for ${conv})`)
+      const ids = await client.send(channelId, direct, resolved, opts.replyTo ?? state.lastInbound)
       this.store.recordResponse({ ...record, delivered: true })
       // record our own outgoing message for qq (koishi does not echo it back)
       if (platform === 'qq') {

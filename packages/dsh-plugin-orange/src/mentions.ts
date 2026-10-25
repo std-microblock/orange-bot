@@ -148,7 +148,7 @@ export interface OutgoingPart {
  * quote, which it drops on markdown messages): it has to start the body, so it is written first
  * and the mentions follow it. The userbot keeps a native quote part and passes no line here.
  */
-export function mentionBody(pieces: MentionPiece[], opts: { platform: 'qq' | 'cg', markdown?: boolean, quoteLine?: string }): OutgoingPart[] {
+export function mentionBody(pieces: MentionPiece[], opts: { platform: string, markdown?: boolean, quoteLine?: string }): OutgoingPart[] {
   if (opts.platform !== 'qq') {
     return pieces.map((piece) => piece.type === 'at'
       ? { type: 'at', userId: piece.id, ...(piece.name ? { name: piece.name } : {}) }
