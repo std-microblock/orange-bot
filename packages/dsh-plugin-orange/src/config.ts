@@ -194,6 +194,11 @@ export interface RuntimeSettings {
    * llm.classifierModel from the cordis patch (then llm.model).
    */
   classifierModel: string
+  /**
+   * Default model for agent sessions (chat workers and tasks without a tier
+   * model). Empty = the static llm.agentModel from the cordis patch.
+   */
+  agentModel: string
   /** Extra persona text appended to the chat agent prompt. */
   personaExtra: string
   /**
@@ -286,6 +291,7 @@ export const DEFAULT_SETTINGS: RuntimeSettings = {
   wakeMergeMs: 2000,
   taskModels: { fast: '', quality: '' },
   classifierModel: '',
+  agentModel: '',
   personaExtra: '',
   prompts: { chat: '', task: '' },
   style: {

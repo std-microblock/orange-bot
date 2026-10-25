@@ -263,6 +263,7 @@ export class Store {
         style: { ...structuredClone(DEFAULT_SETTINGS.style), ...stored.style },
         taskModels: { ...DEFAULT_SETTINGS.taskModels, ...stored.taskModels },
         classifierModel: stored.classifierModel ?? '',
+        agentModel: stored.agentModel ?? '',
         prompts: { ...DEFAULT_SETTINGS.prompts, ...stored.prompts },
         stickers,
       }

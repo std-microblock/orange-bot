@@ -193,6 +193,7 @@ export function GlobalSettings() {
                 <Field label="后台任务模型 · 快速" hint="主 agent 给调研/快速响应类任务（tier: fast）选的模型；空 = 跟随全局 agent 模型"><input className={css.input} style={{ width: 220 }} value={s.taskModels?.fast ?? ''} placeholder="deepseek/…" onChange={(e) => setS({ ...s, taskModels: { fast: e.target.value, quality: s.taskModels?.quality ?? '' } })} /></Field>
                 <Field label="后台任务模型 · 高质量" hint="主 agent 给写代码/修 bug 类任务（tier: quality）选的模型；空 = 跟随全局 agent 模型"><input className={css.input} style={{ width: 220 }} value={s.taskModels?.quality ?? ''} placeholder="deepseek/…" onChange={(e) => setS({ ...s, taskModels: { fast: s.taskModels?.fast ?? '', quality: e.target.value } })} /></Field>
                 <Field label="分类器模型" hint="唤醒分类器和入站筛查用的模型，显示的是当前生效值；清空保存 = 恢复部署配置（再退到全局模型）"><input className={css.input} style={{ width: 220 }} value={s.classifierModel ?? ''} placeholder="留空 = 部署配置" onChange={(e) => setS({ ...s, classifierModel: e.target.value })} /></Field>
+                <Field label="agent 默认模型" hint="chat 和任务 agent（tier 未指定模型时）用的默认模型；清空保存 = 恢复部署配置的 agentModel"><input className={css.input} style={{ width: 220 }} value={s.agentModel ?? ''} placeholder="留空 = 部署配置" onChange={(e) => setS({ ...s, agentModel: e.target.value })} /></Field>
               </div>
             </section>
             <section className={css.section}><h4>说话风格 · 发送前用随机子风格润色</h4>
