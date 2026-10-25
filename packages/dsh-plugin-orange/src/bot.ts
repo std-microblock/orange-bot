@@ -1678,10 +1678,10 @@ export class OrangeBot {
     const handle = await ctx.agents.create({
       sessionId,
       meta: { cwd: workspace.path, agentPreset: presetId },
-      // No explicit model (unset tier) → omit the field entirely so dsh's own
-      // agent-default-model decides; overriding it here would silently pin every
-      // task to the static llm.agentModel from the cordis patch.
-      agentOptions: { provider: this.config.llm.provider, ...(model ? { model } : {}) },
+      // No explicit model (unset tier) → omit BOTH fields so dsh's agent-default-model
+      // decides; a lone provider fails the provider/model pair check, and overriding
+      // both here would silently pin every task to the static llm.agentModel.
+      agentOptions: model ? { provider: this.config.llm.provider, model } : {},
       setup: async (agentCtx: any) => {
         await ctx.agentPresets.mount(agentCtx, presetId)
         this.decorate(agentCtx, role, conv)
@@ -1704,10 +1704,10 @@ export class OrangeBot {
     const model = this.store.get<{ model?: string } | undefined>(`role:${sessionId}`, undefined)?.model
     const handle = await ctx.agents.resume({
       resumeSessionId: sessionId,
-      // No explicit model (unset tier) → omit the field entirely so dsh's own
-      // agent-default-model decides; overriding it here would silently pin every
-      // task to the static llm.agentModel from the cordis patch.
-      agentOptions: { provider: this.config.llm.provider, ...(model ? { model } : {}) },
+      // No explicit model (unset tier) → omit BOTH fields so dsh's agent-default-model
+      // decides; a lone provider fails the provider/model pair check, and overriding
+      // both here would silently pin every task to the static llm.agentModel.
+      agentOptions: model ? { provider: this.config.llm.provider, model } : {},
       setup: async (agentCtx: any) => {
         await ctx.agentPresets.mount(agentCtx, this.config.agentPreset)
         this.decorate(agentCtx, role, conv)
