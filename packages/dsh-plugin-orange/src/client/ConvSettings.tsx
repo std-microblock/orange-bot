@@ -12,7 +12,8 @@ export function ConvSettings({ conv, session }: { conv: Conv, session: string | 
   const [tags, setTags] = useState(conv.settings.tags.join(', '))
   const [note, setNote] = useState(conv.settings.note)
   const [peer, setPeer] = useState(conv.settings.peer ?? '')
-  useEffect(() => { setG(conv.settings); setTags(conv.settings.tags.join(', ')); setNote(conv.settings.note); setPeer(conv.settings.peer ?? '') }, [conv.key, conv.settings])
+  const [ws, setWs] = useState(conv.settings.workspace ?? '')
+  useEffect(() => { setG(conv.settings); setTags(conv.settings.tags.join(', ')); setNote(conv.settings.note); setPeer(conv.settings.peer ?? ''); setWs(conv.settings.workspace ?? '') }, [conv.key, conv.settings])
   const save = async (patch: Partial<Group>) => {
     setG((cur) => ({ ...cur, ...patch }))
     try { await api('/group', { conv: conv.key, patch }); reload(); toast('已保存') } catch (e) { toast((e as Error).message) }
@@ -42,8 +43,13 @@ export function ConvSettings({ conv, session }: { conv: Conv, session: string | 
       <section className={css.section}>
         <h4>对端</h4>
         <div className={css.hint}>同一个群在另一个 bot 下的 id，会自动识别</div>
-        <input className={css.text} value={peer} placeholder="cg:群号 / qq:openid" onChange={(e) => setPeer(e.target.value)} onBlur={() => save({ peer: peer.trim() || undefined })} />
+        <input className={css.text} value={peer} placeholder="cg:群号 / qq:openid" onChange={(e) => setPeer(e.target.value)} onBlur={() => save({ peer: peer.trim() })} />
         {g.peer && <div className={css.peer}>→ <ConvLink conv={g.peer} /></div>}
+      </section>
+      <section className={css.section}>
+        <h4>工作区</h4>
+        <div className={css.hint}>该群 agent session 的工作目录，留空用全局；对端同群自动同步。改动后重置 session 才生效</div>
+        <input className={css.text} value={ws} placeholder="留空 = 全局 workspace" onChange={(e) => setWs(e.target.value)} onBlur={() => save({ workspace: ws.trim() })} />
       </section>
       <section className={css.section}>
         <h4>操作</h4>

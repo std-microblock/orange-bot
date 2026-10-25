@@ -1673,7 +1673,15 @@ export class OrangeBot {
   /** Create a GUI-visible session in the orange workspace with our preset mounted. */
   async createAgent(sessionId: string, role: 'chat' | 'task', title: string, conv: string, admin = false, model?: string): Promise<any> {
     const ctx = this.ctx as any
-    const workspace = await ctx.workspaceRegistry.create(this.config.workspace)
+    // Per-group workspace isolation; a bad path must not brick the group, so fall back to global.
+    const wsPath = this.store.group(conv).workspace || this.config.workspace
+    let workspace: any
+    try {
+      workspace = await ctx.workspaceRegistry.create(wsPath)
+    } catch (e) {
+      this.log.warn(`workspace ${wsPath} unusable (${(e as Error).message}), falling back to ${this.config.workspace}`)
+      workspace = await ctx.workspaceRegistry.create(this.config.workspace)
+    }
     const presetId = this.config.agentPreset
     const model0 = model || this.store.settings().agentModel || this.config.llm.agentModel
     this.log.info(`agent ${sessionId}: ${this.config.llm.provider}/${model0}`)

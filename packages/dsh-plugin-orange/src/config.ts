@@ -73,6 +73,8 @@ export interface GroupSettings {
   note: string
   /** Peer conversation on the other platform (same physical group), for history merge. */
   peer?: string
+  /** Dedicated workspace dir for this group's sessions; empty = the global config workspace. */
+  workspace?: string
 }
 
 /**

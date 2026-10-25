@@ -308,6 +308,7 @@ export class Store {
       if ('listen' in patch) twin.listen = next.listen
       if ('dryRun' in patch) twin.dryRun = next.dryRun
       if ('triggerLimit' in patch) twin.triggerLimit = next.triggerLimit
+      if ('workspace' in patch) twin.workspace = next.workspace
     }
     this.saveSettings(settings)
     return next
