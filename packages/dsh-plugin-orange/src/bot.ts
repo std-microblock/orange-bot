@@ -1740,15 +1740,42 @@ export class OrangeBot {
     try { return readFileSync(join(this.config.dataDir, 'AGENTS.md'), 'utf8') } catch { return '' }
   }
 
+  /**
+   * The project list a conversation's agent works from: the workspace's override
+   * when it has one, else the global list. Read fresh by every consumer, so the
+   * panel's edits reach running sessions.
+   */
+  projectsFor(conv: string): OwnProject[] {
+    const ws = this.store.group(conv).workspace
+    const override = ws ? this.store.settings().workspaces?.[ws]?.projects : undefined
+    return override ?? this.store.settings().ownProjects
+  }
+
+  /**
+   * Every workspace path the operator may configure: the configured default, the
+   * paths groups point at, and paths that already carry overrides — the 工作区 tab
+   * and the AGENTS.md write endpoint both allow exactly these.
+   */
+  knownWorkspaces(): Set<string> {
+    const settings = this.store.settings()
+    const out = new Set([this.config.workspace, ...Object.keys(settings.workspaces ?? {})])
+    for (const g of Object.values(settings.groups)) if (g.workspace) out.add(g.workspace)
+    return out
+  }
+
   /** Role prompt sections (the tools themselves come from the orange preset). */
   decorate(agentCtx: any, role: 'chat' | 'task', conv: string): void {
     const sp = agentCtx.systemPrompt
     const settings = this.store.settings()
     sp.section({
       name: 'orange:role', order: 900, interpolate: false,
-      text: () => role === 'chat'
-        ? `${this.store.settings().prompts.chat || CHAT_PERSONA}\n\n你负责的会话：${conv}（${this.store.convTitle(conv)}）\n主人的项目：${settings.ownProjects.map(projectBrief).join('、')}\n子仓库（同一产品的独立仓库，比如客户端和平台 patcher）用 project_repos 查完整清单，别猜路径\n${this.store.settings().personaExtra}`
-        : `${this.store.settings().prompts.task || TASK_PERSONA}\n\n来源会话：${conv}（${this.store.convTitle(conv)}）`,
+      text: () => {
+        if (role !== 'chat') return `${this.store.settings().prompts.task || TASK_PERSONA}\n\n来源会话：${conv}（${this.store.convTitle(conv)}）`
+        // group profile read fresh each turn like the style rule, so panel edits reach running sessions
+        const g = this.store.group(conv)
+        const profile = [g.tags.length ? `标签：${g.tags.join('、')}` : '', g.note].filter(Boolean).join('；')
+        return `${this.store.settings().prompts.chat || CHAT_PERSONA}\n\n你负责的会话：${conv}（${this.store.convTitle(conv)}）${profile ? `\n群画像（主人手工标注）：${profile}` : ''}\n主人的项目：${this.projectsFor(conv).map(projectBrief).join('、')}\n子仓库（同一产品的独立仓库，比如客户端和平台 patcher）用 project_repos 查完整清单，别猜路径\n${this.store.settings().personaExtra}`
+      },
     })
     // Global operator instructions (dataDir/AGENTS.md): apply to every session no
     // matter which workspace it runs in — per-group workspaces stay isolated, these

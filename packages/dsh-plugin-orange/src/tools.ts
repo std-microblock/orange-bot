@@ -482,8 +482,9 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
       query: { type: 'string', description: 'Project name/alias, repo or subproject, to filter; omit for every project.' },
     },
     output: TEXT_OUT,
-    async execute(args: any) {
-      const all = bot().store.settings().ownProjects
+    async execute(args: any, exec: any) {
+      // the session's conversation decides the workspace, the workspace its project list
+      const all = bot().projectsFor(roleOf(exec).conv)
       const q = String(args.query ?? '').trim().toLowerCase()
       const hit = q ? all.filter((p) => projectTerms(p).concat(p.repo).some((t) => t.toLowerCase().includes(q))) : all
       if (!hit.length) return `(no project matches "${args.query}")`

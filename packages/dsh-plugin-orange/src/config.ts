@@ -197,8 +197,21 @@ export interface StickerSettings {
   model: string
 }
 
+/**
+ * Per-workspace overrides, keyed by workspace path (as configured on a group or
+ * in this map). `projects` replaces the global ownProjects list for every
+ * conversation running in that workspace — undefined/absent = inherit the global
+ * list. The workspace's AGENTS.md is a file in the workspace directory and is
+ * never stored here (see the 工作区 panel tab).
+ */
+export interface WorkspaceSettings {
+  projects?: OwnProject[]
+}
+
 export interface RuntimeSettings {
   groups: Record<string, GroupSettings>
+  /** Per-workspace overrides, keyed by workspace path. */
+  workspaces: Record<string, WorkspaceSettings>
   /** Owned projects (may ask, may fix/PR). */
   ownProjects: OwnProject[]
   /** Projects we can help with only when we find a confident answer. */
@@ -292,6 +305,7 @@ export const DEFAULT_SETTINGS: RuntimeSettings = {
    * from a chat the bot master is in.
    */
   groups: {},
+  workspaces: {},
   ownProjects: [
     { name: 'CeleMod', aliases: ['celemod', 'cm', '蔚蓝mod管理器'], repo: 'std-microblock/CeleMod', note: 'Celeste mod manager (Tauri + Rust + Preact)' },
     {

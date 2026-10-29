@@ -1,7 +1,7 @@
 /** Panel data access, formatting, hash routing, and the live event stream. */
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-export type Tab = 'chats' | 'responses' | 'tasks' | 'stickers' | 'memory' | 'stats' | 'settings'
+export type Tab = 'chats' | 'responses' | 'tasks' | 'stickers' | 'memory' | 'stats' | 'workspaces' | 'settings'
 export type Group = { whitelisted: boolean, dryRun: boolean, listen: boolean, triggerLimit?: 'all' | 'groupAdmin' | 'botAdmin', tags: string[], note: string, peer?: string, workspace?: string }
 export type Conv = { key: string, platform: string, channelId: string, title: string, direct: boolean, lastTs: number, count: number, avatar?: string, settings: Group }
 export type Msg = { seq: number, conv: string, id: string, senderId: string, senderName: string, ts: number, text: string, raw: string, replyTo?: string, self: boolean, fromBot: boolean, mentionsSelf: boolean }

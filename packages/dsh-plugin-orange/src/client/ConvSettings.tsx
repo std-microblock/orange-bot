@@ -1,4 +1,4 @@
-/** Right drawer: per-conversation switches, classifier profile, pairing, actions. */
+/** Right drawer: per-conversation switches, group profile (classifier + chat), pairing, actions. */
 import { useEffect, useState } from 'react'
 import { Button, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import { History, RotateCcw, Zap } from 'lucide-react'
@@ -38,7 +38,7 @@ export function ConvSettings({ conv, session }: { conv: Conv, session: string | 
         <div className={css.label}>标签</div>
         <input className={css.text} value={tags} placeholder="蔚蓝, 开发（逗号分隔）" onChange={(e) => setTags(e.target.value)} onBlur={() => save({ tags: tags.split(/[,，]/).map((s) => s.trim()).filter(Boolean) })} />
         <div className={css.label}>备注</div>
-        <textarea className={css.text} rows={3} value={note} placeholder="这个群主要聊什么，给分类器参考" onChange={(e) => setNote(e.target.value)} onBlur={() => save({ note })} />
+        <textarea className={css.text} rows={3} value={note} placeholder="这个群主要聊什么，分类器和主会话都会读" onChange={(e) => setNote(e.target.value)} onBlur={() => save({ note })} />
       </section>
       <section className={css.section}>
         <h4>对端</h4>

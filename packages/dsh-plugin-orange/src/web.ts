@@ -4,7 +4,9 @@
  * SSE stream of live bot events.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import type { OrangeBot } from './bot.ts'
 import { sniffImage as sniff } from './bot.ts'
 import { humanText, plainText } from './markup.ts'
@@ -33,6 +35,11 @@ async function readBody(req: IncomingMessage, maxBytes = 1024 * 1024): Promise<a
 /** Uploaded stickers arrive as data URLs, so the JSON body is the size limit / 1.37. */
 const UPLOAD_BODY_LIMIT = 96 * 1024 * 1024
 const UPLOAD_FILE_LIMIT = 24 * 1024 * 1024
+
+/** File contents for the 工作区 tab; absent file = '' (a workspace may not exist yet). */
+function readFileSafe(file: string): string {
+  try { return readFileSync(file, 'utf8') } catch { return '' }
+}
 
 export function registerWebApi(ctx: any, getBot: () => OrangeBot | undefined): void {
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
@@ -187,6 +194,42 @@ export function registerWebApi(ctx: any, getBot: () => OrangeBot | undefined): v
         bot.store.saveSettings({ ...bot.store.settings(), ...body })
         bot.broadcast({ type: 'settings' })
         return json(res, 200, bot.store.settings())
+      }
+      // ---- 工作区管理：全局指示 + 各工作区的 AGENTS.md 与项目列表覆盖 ----
+      if (req.method === 'GET' && path === '/workspaces') {
+        const settings = bot.store.settings()
+        const items = [...bot.knownWorkspaces()].map((path_) => ({
+          path: path_,
+          default: path_ === bot.config.workspace,
+          groups: Object.entries(settings.groups).filter(([, g]) => (g.workspace || bot.config.workspace) === path_).map(([k]) => k),
+          agents: readFileSafe(join(path_, 'AGENTS.md')),
+          projects: settings.workspaces?.[path_]?.projects ?? null,
+        })).sort((a, b) => Number(b.default) - Number(a.default))
+        return json(res, 200, { items, globalAgents: readFileSafe(join(bot.config.dataDir, 'AGENTS.md')), ownProjects: settings.ownProjects })
+      }
+      if (req.method === 'POST' && path === '/workspaces/agents') {
+        const body = await readBody(req)
+        // '' = the global operator instructions (dataDir); anything else must be a
+        // known workspace path — the panel never gets to write arbitrary files.
+        let file: string
+        if (!body.path) file = join(bot.config.dataDir, 'AGENTS.md')
+        else if (bot.knownWorkspaces().has(String(body.path))) file = join(String(body.path), 'AGENTS.md')
+        else return json(res, 400, { error: `unknown workspace: ${body.path}` })
+        await mkdir(dirname(file), { recursive: true })
+        await writeFile(file, String(body.content ?? ''), 'utf8')
+        return json(res, 200, { ok: true })
+      }
+      if (req.method === 'POST' && path === '/workspaces/projects') {
+        const body = await readBody(req)
+        const ws = String(body.path ?? '')
+        if (!bot.knownWorkspaces().has(ws)) return json(res, 400, { error: `unknown workspace: ${ws}` })
+        const settings = bot.store.settings()
+        const workspaces = { ...settings.workspaces }
+        if (body.projects == null) delete workspaces[ws]
+        else workspaces[ws] = { ...workspaces[ws], projects: body.projects }
+        bot.store.saveSettings({ ...settings, workspaces })
+        bot.broadcast({ type: 'settings' })
+        return json(res, 200, { ok: true })
       }
       if (req.method === 'POST' && path === '/send') {
         const body = await readBody(req)

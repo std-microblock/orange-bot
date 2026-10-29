@@ -1,7 +1,7 @@
 /** Panel shell: left nav, routed page, lightbox and toast. */
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ImageLightbox, Toast } from '@deepseek-ai/dsh-client-ui-primitives'
-import { BarChart3, Brain, MessagesSquare, Send, Settings2, Smile, Wrench } from 'lucide-react'
+import { BarChart3, Brain, FolderCog, MessagesSquare, Send, Settings2, Smile, Wrench } from 'lucide-react'
 import { api, useEvents, useRoute, type Conv, type Tab } from './api.ts'
 import { PanelCtx, type Ctx } from './ui.tsx'
 import { Chats } from './Chats.tsx'
@@ -10,6 +10,7 @@ import { Tasks } from './Tasks.tsx'
 import { Stickers } from './Stickers.tsx'
 import { Memory } from './Memory.tsx'
 import { Stats } from './Stats.tsx'
+import { Workspaces } from './Workspaces.tsx'
 import { GlobalSettings } from './Settings.tsx'
 import css from './Page.module.css'
 
@@ -20,6 +21,7 @@ const TABS: { id: Tab, label: string, Icon: typeof Send }[] = [
   { id: 'tasks', label: '后台任务', Icon: Wrench },
   { id: 'memory', label: '记忆与用户', Icon: Brain },
   { id: 'stats', label: '用量', Icon: BarChart3 },
+  { id: 'workspaces', label: '工作区', Icon: FolderCog },
   { id: 'settings', label: '设置', Icon: Settings2 },
 ]
 
@@ -49,7 +51,7 @@ export function OrangePage({ openSession }: { openSession: (id: string) => void 
   const convs: Conv[] = overview?.conversations ?? []
   const byKey = useMemo(() => new Map(convs.map((c) => [c.key, c])), [convs])
   const ctx: Ctx = { go, route, byKey, convs, tick, stickerTick, stickerJob, reload, openSession, toast: setToast, zoom: setZoom }
-  const Body = { chats: Chats, responses: Responses, tasks: Tasks, stickers: Stickers, memory: Memory, stats: Stats, settings: GlobalSettings }[route.tab] ?? Chats
+  const Body = { chats: Chats, responses: Responses, tasks: Tasks, stickers: Stickers, memory: Memory, stats: Stats, workspaces: Workspaces, settings: GlobalSettings }[route.tab] ?? Chats
   return (
     <PanelCtx.Provider value={ctx}>
       <div className={css.root}>

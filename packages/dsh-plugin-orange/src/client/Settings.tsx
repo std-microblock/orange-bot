@@ -6,8 +6,8 @@ import { api } from './api.ts'
 import { Field, Header, usePanel } from './ui.tsx'
 import css from './pages.module.css'
 
-type Sub = { name: string, repo: string, aliases?: string[], note?: string }
-type Item = { name: string, aliases: string[], repo?: string, note: string, org?: string, subs?: Sub[] }
+export type Sub = { name: string, repo: string, aliases?: string[], note?: string }
+export type Item = { name: string, aliases: string[], repo?: string, note: string, org?: string, subs?: Sub[] }
 /** Speaking style: one global main style, plus a pool the send-time rewrite draws from. */
 type Style = { enabled: boolean, main: string, subs: string[], pickMin: number, pickMax: number, temperature: number, model: string }
 /** The 表情 categories the agent may use and the import classifier picks from. */
@@ -120,7 +120,7 @@ function StyleCard({ value, onChange }: { value?: Partial<Style>, onChange: (v: 
  * otherwise bury the rest of the settings page (and the classifier prompt, which
  * only ever gets the project's single line).
  */
-function ItemList({ items, repo, onChange }: { items: Item[], repo: boolean, onChange: (v: Item[]) => void }) {
+export function ItemList({ items, repo, onChange }: { items: Item[], repo: boolean, onChange: (v: Item[]) => void }) {
   const [open, setOpen] = useState<number | null>(null)
   const set = (i: number, patch: Partial<Item>) => onChange(items.map((x, j) => j === i ? { ...x, ...patch } : x))
   const subs = (p: Item) => p.subs ?? []
