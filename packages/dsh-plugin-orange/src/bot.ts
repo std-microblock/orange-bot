@@ -1286,6 +1286,9 @@ export class OrangeBot {
   private async runClassify(conv: string): Promise<void> {
     const settings = this.store.settings()
     if (!settings.classifierEnabled) return
+    // the workspace the group runs in decides which projects/topics the classifier
+    // judges relevance against — same view the agent itself gets
+    const ws = this.wsConfig(conv)
     const state = this.state(conv)
     const fresh = this.store.after(conv, state.classifiedSeq).filter((m) => !m.fromBot)
     if (!fresh.length) return
@@ -1300,7 +1303,7 @@ export class OrangeBot {
     // unless the bot spoke recently (answers to its questions must be picked up quickly)
     const sinceBot = Date.now() - state.lastBotTs
     const oldest = judged[0].ts
-    if (sinceBot > 30 * 60_000 && judged.length < 3 && Date.now() - oldest < 120_000 && !judged.some((m) => mentionsTopic(m.text, settings))) {
+    if (sinceBot > 30 * 60_000 && judged.length < 3 && Date.now() - oldest < 120_000 && !judged.some((m) => mentionsTopic(m.text, ws))) {
       this.scheduleClassify(conv)
       return
     }
@@ -1310,8 +1313,8 @@ export class OrangeBot {
     const transcript = context.filter((m) => !this.koishiHandled(m)).map((m) => `${m.seq >= firstNew && !m.fromBot ? '[NEW] ' : ''}${formatLine(m)}`).join('\n')
     const botRecent = context.filter((m) => m.fromBot).slice(-3).map((m) => `- ${m.text.slice(0, 120)}`).join('\n')
     const system = classifierSystem({
-      ownProjects: settings.ownProjects.map(projectLine).join('\n'),
-      assistTopics: settings.assistTopics.map((p) => `- ${p.name}（${p.aliases.join('/')}，${p.note}）`).join('\n'),
+      ownProjects: ws.projects.map(projectLine).join('\n'),
+      assistTopics: ws.assistTopics.map((p) => `- ${p.name}（${p.aliases.join('/')}，${p.note}）`).join('\n'),
       groupTags: group.tags.join(', '), groupNote: group.note, botRecent,
     })
     const toSeq = lastSeq
@@ -1741,14 +1744,29 @@ export class OrangeBot {
   }
 
   /**
-   * The project list a conversation's agent works from: the workspace's override
-   * when it has one, else the global list. Read fresh by every consumer, so the
-   * panel's edits reach running sessions.
+   * Effective agent configuration for a conversation: its workspace's overrides,
+   * field by field, on top of the global defaults. Read fresh by every consumer
+   * (persona, classifier, tools), so the 工作区 tab's edits reach running
+   * sessions without a reset.
+   */
+  wsConfig(conv: string): { projects: OwnProject[], assistTopics: { name: string, aliases: string[], note: string }[], prompts: { chat: string, task: string }, personaExtra: string } {
+    const s = this.store.settings()
+    const o = this.store.group(conv).workspace
+    const w = o ? s.workspaces?.[o] : undefined
+    return {
+      projects: w?.projects ?? s.ownProjects,
+      assistTopics: w?.assistTopics ?? s.assistTopics,
+      prompts: { chat: w?.prompts?.chat ?? s.prompts.chat, task: w?.prompts?.task ?? s.prompts.task },
+      personaExtra: w?.personaExtra ?? s.personaExtra,
+    }
+  }
+
+  /**
+   * The project list a conversation's agent works from (see wsConfig); kept as
+   * its own accessor for tools.ts.
    */
   projectsFor(conv: string): OwnProject[] {
-    const ws = this.store.group(conv).workspace
-    const override = ws ? this.store.settings().workspaces?.[ws]?.projects : undefined
-    return override ?? this.store.settings().ownProjects
+    return this.wsConfig(conv).projects
   }
 
   /**
@@ -1766,15 +1784,17 @@ export class OrangeBot {
   /** Role prompt sections (the tools themselves come from the orange preset). */
   decorate(agentCtx: any, role: 'chat' | 'task', conv: string): void {
     const sp = agentCtx.systemPrompt
-    const settings = this.store.settings()
     sp.section({
       name: 'orange:role', order: 900, interpolate: false,
       text: () => {
-        if (role !== 'chat') return `${this.store.settings().prompts.task || TASK_PERSONA}\n\n来源会话：${conv}（${this.store.convTitle(conv)}）`
+        // persona, projects and persona-extra all resolve through the conversation's
+        // workspace, fresh each turn — 工作区 tab edits reach running sessions
+        const ws = this.wsConfig(conv)
+        if (role !== 'chat') return `${ws.prompts.task || TASK_PERSONA}\n\n来源会话：${conv}（${this.store.convTitle(conv)}）`
         // group profile read fresh each turn like the style rule, so panel edits reach running sessions
         const g = this.store.group(conv)
         const profile = [g.tags.length ? `标签：${g.tags.join('、')}` : '', g.note].filter(Boolean).join('；')
-        return `${this.store.settings().prompts.chat || CHAT_PERSONA}\n\n你负责的会话：${conv}（${this.store.convTitle(conv)}）${profile ? `\n群画像（主人手工标注）：${profile}` : ''}\n主人的项目：${this.projectsFor(conv).map(projectBrief).join('、')}\n子仓库（同一产品的独立仓库，比如客户端和平台 patcher）用 project_repos 查完整清单，别猜路径\n${this.store.settings().personaExtra}`
+        return `${ws.prompts.chat || CHAT_PERSONA}\n\n你负责的会话：${conv}（${this.store.convTitle(conv)}）${profile ? `\n群画像（主人手工标注）：${profile}` : ''}\n主人的项目：${ws.projects.map(projectBrief).join('、')}\n子仓库（同一产品的独立仓库，比如客户端和平台 patcher）用 project_repos 查完整清单，别猜路径\n${ws.personaExtra}`
       },
     })
     // Global operator instructions (dataDir/AGENTS.md): apply to every session no
@@ -2415,9 +2435,9 @@ function utterance(text: string): string {
 
 function delay(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)) }
 
-function mentionsTopic(text: string, settings: { ownProjects: OwnProject[], assistTopics: { aliases: string[], name: string }[] }): boolean {
+function mentionsTopic(text: string, ws: { projects: OwnProject[], assistTopics: { aliases: string[], name: string }[] }): boolean {
   const lower = text.toLowerCase()
-  return [...settings.ownProjects, ...settings.assistTopics].some((p) => projectTerms(p).some((a) => a.length > 2 && lower.includes(a.toLowerCase())))
+  return [...ws.projects, ...ws.assistTopics].some((p) => projectTerms(p).some((a) => a.length > 2 && lower.includes(a.toLowerCase())))
 }
 
 /**

@@ -195,17 +195,27 @@ export function registerWebApi(ctx: any, getBot: () => OrangeBot | undefined): v
         bot.broadcast({ type: 'settings' })
         return json(res, 200, bot.store.settings())
       }
-      // ---- 工作区管理：全局指示 + 各工作区的 AGENTS.md 与项目列表覆盖 ----
+      // ---- 工作区管理：全局指示 + 各工作区的人设/项目/话题覆盖 ----
       if (req.method === 'GET' && path === '/workspaces') {
         const settings = bot.store.settings()
-        const items = [...bot.knownWorkspaces()].map((path_) => ({
-          path: path_,
-          default: path_ === bot.config.workspace,
-          groups: Object.entries(settings.groups).filter(([, g]) => (g.workspace || bot.config.workspace) === path_).map(([k]) => k),
-          agents: readFileSafe(join(path_, 'AGENTS.md')),
-          projects: settings.workspaces?.[path_]?.projects ?? null,
-        })).sort((a, b) => Number(b.default) - Number(a.default))
-        return json(res, 200, { items, globalAgents: readFileSafe(join(bot.config.dataDir, 'AGENTS.md')), ownProjects: settings.ownProjects })
+        const items = [...bot.knownWorkspaces()].map((path_) => {
+          const w = settings.workspaces?.[path_]
+          const isDefault = path_ === bot.config.workspace
+          // the default workspace's values ARE the global defaults; others show the
+          // override when set, else the inherited global value
+          const src = isDefault ? { projects: settings.ownProjects, assistTopics: settings.assistTopics, prompts: settings.prompts, personaExtra: settings.personaExtra } : w
+          return {
+            path: path_, default: isDefault,
+            groups: Object.entries(settings.groups).filter(([, g]) => (g.workspace || bot.config.workspace) === path_).map(([k]) => k),
+            agents: readFileSafe(join(path_, 'AGENTS.md')),
+            overridden: !isDefault && !!w,
+            projects: src?.projects ?? [],
+            assistTopics: src?.assistTopics ?? [],
+            prompts: src?.prompts ?? { chat: '', task: '' },
+            personaExtra: src?.personaExtra ?? '',
+          }
+        }).sort((a, b) => Number(b.default) - Number(a.default))
+        return json(res, 200, { items, globalAgents: readFileSafe(join(bot.config.dataDir, 'AGENTS.md')) })
       }
       if (req.method === 'POST' && path === '/workspaces/agents') {
         const body = await readBody(req)
@@ -219,15 +229,40 @@ export function registerWebApi(ctx: any, getBot: () => OrangeBot | undefined): v
         await writeFile(file, String(body.content ?? ''), 'utf8')
         return json(res, 200, { ok: true })
       }
-      if (req.method === 'POST' && path === '/workspaces/projects') {
+      if (req.method === 'POST' && path === '/workspaces/config') {
         const body = await readBody(req)
         const ws = String(body.path ?? '')
         if (!bot.knownWorkspaces().has(ws)) return json(res, 400, { error: `unknown workspace: ${ws}` })
         const settings = bot.store.settings()
-        const workspaces = { ...settings.workspaces }
-        if (body.projects == null) delete workspaces[ws]
-        else workspaces[ws] = { ...workspaces[ws], projects: body.projects }
-        bot.store.saveSettings({ ...settings, workspaces })
+        // persona texts follow the built-in when cleared or saved unchanged (same
+        // normalization /settings applies), so code-side prompt updates stay effective
+        const normPrompts = (p: any) => ({
+          chat: !String(p?.chat ?? '').trim() || p?.chat === CHAT_PERSONA ? '' : String(p?.chat),
+          task: !String(p?.task ?? '').trim() || p?.task === TASK_PERSONA ? '' : String(p?.task),
+        })
+        if (ws === bot.config.workspace) {
+          // the default workspace edits the global defaults directly
+          const patch: any = {}
+          if (body.projects !== undefined) patch.ownProjects = body.projects
+          if (body.assistTopics !== undefined) patch.assistTopics = body.assistTopics
+          if (body.prompts !== undefined) patch.prompts = normPrompts(body.prompts)
+          if (body.personaExtra !== undefined) patch.personaExtra = String(body.personaExtra ?? '')
+          bot.store.saveSettings({ ...settings, ...patch })
+        } else {
+          const workspaces = { ...settings.workspaces }
+          // reset = 恢复跟随全局: drop the whole override entry
+          if (body.reset) {
+            delete workspaces[ws]
+          } else {
+            const cur = { ...workspaces[ws] }
+            if (body.projects !== undefined) cur.projects = body.projects
+            if (body.assistTopics !== undefined) cur.assistTopics = body.assistTopics
+            if (body.prompts !== undefined) cur.prompts = normPrompts(body.prompts)
+            if (body.personaExtra !== undefined) cur.personaExtra = String(body.personaExtra ?? '')
+            workspaces[ws] = cur
+          }
+          bot.store.saveSettings({ ...settings, workspaces })
+        }
         bot.broadcast({ type: 'settings' })
         return json(res, 200, { ok: true })
       }

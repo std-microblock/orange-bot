@@ -198,14 +198,19 @@ export interface StickerSettings {
 }
 
 /**
- * Per-workspace overrides, keyed by workspace path (as configured on a group or
- * in this map). `projects` replaces the global ownProjects list for every
- * conversation running in that workspace — undefined/absent = inherit the global
- * list. The workspace's AGENTS.md is a file in the workspace directory and is
- * never stored here (see the 工作区 panel tab).
+ * Per-workspace agent configuration, keyed by workspace path (as configured on a
+ * group or in this map). Every field is an override: absent = inherit the global
+ * default (RuntimeSettings.ownProjects / assistTopics / prompts / personaExtra,
+ * which double as the default workspace's own values). The workspace's AGENTS.md
+ * is a file in the workspace directory and is never stored here (see the 工作区
+ * panel tab).
  */
 export interface WorkspaceSettings {
   projects?: OwnProject[]
+  assistTopics?: { name: string, aliases: string[], note: string }[]
+  /** Persona prompt overrides; '' inside = follow the built-in text, same as the global prompts. */
+  prompts?: { chat: string, task: string }
+  personaExtra?: string
 }
 
 export interface RuntimeSettings {
