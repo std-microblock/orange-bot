@@ -13,6 +13,7 @@ import z from 'schemastery'
  * endpoints under `path`.
  */
 export interface Config {
+  /** Unused since the internal-router move (the satori server authenticates `/v1/*`); kept so old config rows keep loading. */
   token: string
   /** The crossgram imPlatform session this instance serves (e.g. `qqnt`, `lark`). */
   platformId: string
@@ -21,7 +22,7 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
-  token: z.string().required(),
+  token: z.string().default(''),
   platformId: z.string().default('qqnt'),
   botPlatform: z.string().default('qq'),
 })
@@ -29,7 +30,6 @@ export const Config: z<Config> = z.object({
 export const name = 'orange-ext'
 export const inject = ['imPlatform', 'imSticker', 'satori']
 
-const MAX_BODY = 64 * 1024
 /** Largest sticker this route will inline as base64 (the CDN URL is preferred). */
 const MAX_STICKER_BYTES = 12 * 1024 * 1024
 
@@ -38,28 +38,33 @@ interface SatoriBot {
   platform: string
   session(payload: Record<string, unknown>): unknown
   dispatch(session: unknown): void
-  _internalRouter: { define(path: string, callback: (req: any) => Promise<Response>): unknown }
+  _internalRouter: { define(path: string, callback: (req: any) => Promise<unknown>): unknown }
+}
+
+/**
+ * core 4.6's internal-route contract: the callback gets an InternalRequest
+ * (headers as a plain dict, body as ArrayBuffer) and returns a protocol
+ * Response ({status, body: ArrayBuffer}). Wrapped once so handlers stay (json) => json.
+ * No Bearer check here: the satori server strips `authorization` from internal
+ * requests and authenticates the whole `/v1/*` surface itself (verified: no-token
+ * requests get 403 before any route runs).
+ */
+function internalJson(handler: (body: any) => Promise<unknown>, method: string, logger: any) {
+  const payload = (status: number, value: unknown) => ({ status, body: new TextEncoder().encode(JSON.stringify(value)).buffer as ArrayBuffer })
+  return async (req: any) => {
+    try {
+      const raw = req.body?.byteLength ? Buffer.from(req.body).toString('utf8') : ''
+      return payload(200, { ok: true, result: await handler(raw ? JSON.parse(raw) : {}) })
+    } catch (error) {
+      logger.warn('%s failed: %s', method, error instanceof Error ? error.message : String(error))
+      return payload(500, { ok: false, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
 }
 
 function qqMessageSequenceFromMetadata(metadata?: Record<string, unknown>): number | undefined {
   const value = metadata?.qqMsgSeq
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined
-}
-
-async function readJson(req: { body?: ReadableStream<Uint8Array> | null }): Promise<any> {
-  const reader = req.body?.getReader()
-  if (!reader) return {}
-  const chunks: Buffer[] = []
-  let size = 0
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    size += value.byteLength
-    if (size > MAX_BODY) { await reader.cancel(); throw new Error('body too large') }
-    chunks.push(Buffer.from(value))
-  }
-  const text = Buffer.concat(chunks).toString('utf8')
-  return text ? JSON.parse(text) : {}
 }
 
 export function apply(ctx: Context, config: Config) {
@@ -69,21 +74,19 @@ export function apply(ctx: Context, config: Config) {
    * The exporter bot this instance rides on. It may connect after this plugin
    * loads (and `bot-added` fires before `platform` is assigned, so a one-shot
    * lookup is not enough) — poll briefly, then run the callback once it is there.
+   * Native setInterval on purpose: cordis' ctx.setInterval needs the timer service injected.
    */
   const onBot = (run: (bot: SatoriBot) => void): void => {
-    const timer = ctx.setInterval(() => {
-      const bot = ((ctx as any).bots ?? []).find((candidate: SatoriBot) => candidate.platform === config.botPlatform)
+    const find = () => ((ctx as any).bots ?? []).find((candidate: SatoriBot) => candidate.platform === config.botPlatform)
+    const found = find()
+    if (found) { run(found); return }
+    const timer = setInterval(() => {
+      const bot = find()
       if (!bot) return
       clearInterval(timer)
       run(bot)
     }, 2000)
-    // the very first tick can fire immediately when the bot is already up
-    ;((ctx as any).bots ?? []).some((candidate: SatoriBot) => {
-      if (candidate.platform !== config.botPlatform) return false
-      clearInterval(timer)
-      run(candidate)
-      return true
-    })
+    ctx.effect(() => () => clearInterval(timer))
   }
 
   const binding = (): ActivePlatformSession => {
@@ -191,21 +194,9 @@ export function apply(ctx: Context, config: Config) {
    * collides with another. The `{ok, result}` JSON envelope and the Bearer check are
    * unchanged from the old standalone-HTTP days.
    */
+  const pendingRoutes: [string, (body: any) => Promise<unknown>][] = []
   const route = (method: string, handler: (body: any) => Promise<unknown>) => {
-    onBot((bot) => {
-      bot._internalRouter.define(`/${method}`, async (req: any) => {
-        if (req.headers.get('authorization') !== `Bearer ${config.token}`) {
-          return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 })
-        }
-        try {
-          const body = await readJson(req)
-          return Response.json({ ok: true, result: await handler(body) })
-        } catch (error) {
-          logger.warn('%s failed: %s', method, error instanceof Error ? error.message : String(error))
-          return Response.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, { status: 500 })
-        }
-      })
-    })
+    pendingRoutes.push([method, handler])
   }
 
   /** {channelId, messageId} -> structured message incl. forward bundle locators. */
@@ -421,5 +412,13 @@ export function apply(ctx: Context, config: Config) {
     if (!ids.length) throw new Error('messageIds required')
     await platform.deleteMessages(session, { id: String(channelId) }, ids, { forEveryone: true })
     return { recalled: ids }
+  })
+
+  // all routes registered — now they can be mounted on the bot (it may connect later)
+  onBot((bot) => {
+    logger.info('mounting %d internal routes on bot %s', pendingRoutes.length, config.botPlatform)
+    for (const [method, handler] of pendingRoutes) {
+      bot._internalRouter.define(`/${method}`, internalJson(handler, method, logger))
+    }
   })
 }
