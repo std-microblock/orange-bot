@@ -13,29 +13,32 @@ import z from 'schemastery'
  * endpoints under `path`.
  */
 export interface Config {
-  path: string
   token: string
+  /** The crossgram imPlatform session this instance serves (e.g. `qqnt`, `lark`). */
   platformId: string
+  /** The Satori wire platform of the exporter bot for that session (`qq` for the userbot). */
+  botPlatform: string
 }
 
 export const Config: z<Config> = z.object({
-  path: z.string().default('/orange'),
   token: z.string().required(),
   platformId: z.string().default('qqnt'),
+  botPlatform: z.string().default('qq'),
 })
 
 export const name = 'orange-ext'
-export const inject = ['server', 'imPlatform', 'imSticker', 'satori']
+export const inject = ['imPlatform', 'imSticker', 'satori']
 
 const MAX_BODY = 64 * 1024
 /** Largest sticker this route will inline as base64 (the CDN URL is preferred). */
 const MAX_STICKER_BYTES = 12 * 1024 * 1024
 
-/** Structural slice of `@satorijs/core`'s Bot: enough to dispatch custom events. */
+/** Structural slice of `@satorijs/core`'s Bot: enough to dispatch events and host internal routes. */
 interface SatoriBot {
   platform: string
   session(payload: Record<string, unknown>): unknown
   dispatch(session: unknown): void
+  _internalRouter: { define(path: string, callback: (req: any) => Promise<Response>): unknown }
 }
 
 function qqMessageSequenceFromMetadata(metadata?: Record<string, unknown>): number | undefined {
@@ -61,7 +64,27 @@ async function readJson(req: { body?: ReadableStream<Uint8Array> | null }): Prom
 
 export function apply(ctx: Context, config: Config) {
   const logger = ctx.logger('orange-ext')
-  const prefix = config.path.replace(/\/$/, '')
+
+  /**
+   * The exporter bot this instance rides on. It may connect after this plugin
+   * loads (and `bot-added` fires before `platform` is assigned, so a one-shot
+   * lookup is not enough) — poll briefly, then run the callback once it is there.
+   */
+  const onBot = (run: (bot: SatoriBot) => void): void => {
+    const timer = ctx.setInterval(() => {
+      const bot = ((ctx as any).bots ?? []).find((candidate: SatoriBot) => candidate.platform === config.botPlatform)
+      if (!bot) return
+      clearInterval(timer)
+      run(bot)
+    }, 2000)
+    // the very first tick can fire immediately when the bot is already up
+    ;((ctx as any).bots ?? []).some((candidate: SatoriBot) => {
+      if (candidate.platform !== config.botPlatform) return false
+      clearInterval(timer)
+      run(candidate)
+      return true
+    })
+  }
 
   const binding = (): ActivePlatformSession => {
     const found = ctx.imPlatform.sessions.find((item) => item.session.platformId === config.platformId)
@@ -162,22 +185,26 @@ export function apply(ctx: Context, config: Config) {
     }
   }
 
+  /**
+   * Routes live on the Satori internal router (`POST {endpoint}/v1/internal/<platform>/<selfId>/<method>`):
+   * the server picks the bot from the URL, so one orange-ext per platform bot never
+   * collides with another. The `{ok, result}` JSON envelope and the Bearer check are
+   * unchanged from the old standalone-HTTP days.
+   */
   const route = (method: string, handler: (body: any) => Promise<unknown>) => {
-    ctx.server.post(`${prefix}/${method}`, async (req: any, res: any) => {
-      if (req.headers.get('authorization') !== `Bearer ${config.token}`) {
-        res.status = 401
-        res.json({ error: 'unauthorized' })
-        return
-      }
-      try {
-        const body = await readJson(req)
-        res.status = 200
-        res.json({ ok: true, result: await handler(body) })
-      } catch (error) {
-        logger.warn('%s failed: %s', method, error instanceof Error ? error.message : String(error))
-        res.status = 500
-        res.json({ ok: false, error: error instanceof Error ? error.message : String(error) })
-      }
+    onBot((bot) => {
+      bot._internalRouter.define(`/${method}`, async (req: any) => {
+        if (req.headers.get('authorization') !== `Bearer ${config.token}`) {
+          return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 })
+        }
+        try {
+          const body = await readJson(req)
+          return Response.json({ ok: true, result: await handler(body) })
+        } catch (error) {
+          logger.warn('%s failed: %s', method, error instanceof Error ? error.message : String(error))
+          return Response.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, { status: 500 })
+        }
+      })
     })
   }
 
@@ -264,19 +291,17 @@ export function apply(ctx: Context, config: Config) {
   // Rides the standard Satori event socket as a custom `orange-message` event. The
   // `_payload` field crosses the Satori wire untouched (underscore keys are exempt
   // from the snake_case transform), so the client reads the rendered shape as-is.
-  // `bot-added` fires from the Bot constructor before `platform` is assigned, so a
-  // cached reference cannot be filtered by platform at event time — resolve the
-  // exporter bot from `ctx.bots` on every message instead.
-  const qqBot = (): SatoriBot | undefined =>
-    ((ctx as any).bots ?? []).find((candidate: SatoriBot) => candidate.platform === 'qq')
+  // The dispatching bot is resolved per message (a cached reference could go stale).
+  const eventBot = (): SatoriBot | undefined =>
+    ((ctx as any).bots ?? []).find((candidate: SatoriBot) => candidate.platform === config.botPlatform)
 
   let seen = 0
-  route('debug', async () => ({ seen, bot: Boolean(qqBot()) }))
+  route('debug', async () => ({ seen, bot: Boolean(eventBot()) }))
   ctx.on('im-platform/event-committed' as any, (session: PlatformSession, committed: any) => {
     seen++
     if (session.platformId !== config.platformId || committed.event.type !== 'message' || !committed.result?.created) return
-    const bot = qqBot()
-    if (!bot) { logger.warn('message skipped: no qq bot in ctx.bots'); return }
+    const bot = eventBot()
+    if (!bot) { logger.warn('message skipped: no %s bot in ctx.bots', config.botPlatform); return }
     const found = ctx.imPlatform.sessions.find((item) => item.session.platformSessionId === session.platformSessionId)
     if (!found) return
     const conversation = committed.event.conversation

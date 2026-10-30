@@ -18,16 +18,16 @@ cd <crossgram> && pnpm install        # workspace:* 会从 crossgram 里解析 @
 
 ```yaml
 orange-ext:
-  path: /satori/orange     # 默认 /orange；要和 dsh 侧 endpoint 的路径后缀一致
   token: <TOKEN>           # 必填；dsh 侧的 ORANGE_CROSSGRAM_TOKEN 要跟它一样
-  platformId: qqnt         # 默认值，指向要服务的那个平台
+  platformId: qqnt         # 默认值，指向要服务的那个 crossgram 平台
+  botPlatform: qq          # 该平台在 satori 侧注册的 bot 的 platform 名
 ```
 
-外网访问要同时放行 `/satori/v1/*`（出站发送走它）和 `<path>/*`（本插件），例如 Caddy：
+外网访问只需放行 `/satori/v1/*`（事件、出站发送、下面的 internal 路由全走它），例如 Caddy：
 
 ```caddy
 https://bot.example.com:41009 {
-	@satori path /satori/v1/* /satori/orange/*
+	@satori path /satori/v1/*
 	handle @satori { reverse_proxy 127.0.0.1:3140 }
 	respond 404
 }
@@ -37,7 +37,7 @@ https://bot.example.com:41009 {
 
 ## HTTP 路由
 
-都是 `POST <path>/<method>`，JSON 进 `{"ok":true,"result":…}` 出，未带 `Authorization: Bearer <token>` 一律 401，请求体上限 64KB。
+全部骑在 Satori internal router 上：`POST {endpoint}/v1/internal/<botPlatform>/<selfId>/<method>`——server 按 URL 里的 platform/selfId 选 bot，再进本插件在该 bot 上注册的路由，所以同一服务器上多份 orange-ext（qqnt + lark 各一份）互不相撞。JSON 进 `{"ok":true,"result":…}` 出，未带 `Authorization: Bearer <token>` 一律 401，请求体上限 64KB。`<selfId>` 用 ready 帧里 login 的 `self_id`（userbot 是数字 QQ 号）。
 
 | 路由 | 请求 | 响应 |
 |---|---|---|
@@ -57,19 +57,12 @@ https://bot.example.com:41009 {
 
 平台没有对应能力时该路由报 `unsupported`（例如某个适配器没有 `getHistory`），其它路由不受影响。
 
-## 事件流：`<path>/events`（WebSocket）
+## 事件流
 
-```
-client ──▶ ws 连接
-client ──▶ {"token": "<token>"}                     ← 5 秒内必须发，否则 4001 关闭
-server ──▶ {"type":"ready","selfId":"…","loginId":"…"}
-server ──▶ {"type":"message","conversation":{id,kind,title},"message":{…},"outgoing":bool}
-             （此后每 20 秒一次 ws ping，客户端回 pong 即可）
-```
+没有独立接口——事件骑在标准 Satori 事件 socket（`/v1/events`）上，以自定义 `orange-message` 事件 dispatch（`_payload` 携带 `conversation/message/outgoing`，下划线键免于 snake_case 转换，dsh 侧原样读）。多平台同服务器时，每条帧带 `platform` 标记，客户端各取各的。
 
-- 关闭码：`4000` 帧解析失败、`4001` 认证超时、`4004` token 不对。
-- **`selfId` 和 `loginId` 不是一回事**：`selfId` 是平台的不透明用户 id（消息发送者、`@` 用它），而 Satori API 认证用的是 **登录 id**——satori-exporter 在知道数字 QQ 号时会把 bot 注册在数字号下（`session.metadata.qq`）。只报 `selfId` 的话，userbot 侧每一次发送都会 403 `login not found`。两个都报出去，dsh 侧才知道消息里该认谁、发送时该用哪个头。
 - 流里**包含账号自己发的消息**（`outgoing: true`）：userbot 是主人的账号，机器人要能认出自己刚说的话，面板也要显示。
+- **selfId 和 loginId 不是一回事**：消息/`@` 用平台的 opaque id，Satori API 认证用登录 id（userbot 的数字 QQ 号）；两者都由 satori-exporter 的 ready 帧报告。
 
 ## 安全提醒
 
