@@ -467,12 +467,26 @@ export class QQOfficialClient extends SatoriClient {
   }
 }
 
-/** crossgram satori-exporter (userbot, the admin's own QQ account). */
+/** crossgram satori-exporter (userbot, the admin's own QQ account; also any further platform bridged through crossgram's imPlatform layer). */
 export class CrossgramClient extends SatoriClient {
   /** userbot account sends prefix; the account is shared with a human. */
   static readonly PREFIX = '🤖 '
   /** Effective prefix; the bot refreshes it from settings before each send. */
   sendPrefix = CrossgramClient.PREFIX
+  /**
+   * Whether this account is a human's own account shared with the bot (the cg
+   * userbot): echo detection, the 🤖 marker and the twin pairing below all hang
+   * off this; a crossgram-bridged bot account (e.g. a Lark bot) sets it false.
+   */
+  readonly sharedAccount: boolean
+  /** Wire `login.platform` the exporter registers this platform under (satori ready frame). */
+  private readonly wirePlatform: string
+
+  constructor(platform: PlatformKey, cfg: SatoriEndpoint, log: (level: 'info' | 'warn', msg: string) => void, opts: { wirePlatform?: string, sharedAccount?: boolean } = {}) {
+    super(platform, cfg, log)
+    this.wirePlatform = opts.wirePlatform ?? 'qq'
+    this.sharedAccount = opts.sharedAccount ?? false
+  }
 
   protected eventsUrl(): string { return this.cfg.endpoint.replace(/^http/, 'ws') + '/v1/events' }
   protected identify(ws: WebSocket): void { ws.send(JSON.stringify({ op: 3, body: { token: this.cfg.token } })) }
@@ -482,12 +496,12 @@ export class CrossgramClient extends SatoriClient {
       // The exporter registers this userbot under its numeric QQ id, so the Satori
       // login id doubles as the self id: senders, mentions, and `@me` detection all
       // stay in the numeric space the events below use.
-      const login = frame.body?.logins?.find((l: any) => l.platform === 'qq')
+      const login = frame.body?.logins?.find((l: any) => l.platform === this.wirePlatform)
       const id = login?.self_id ?? login?.user?.id
       if (id) { this.selfId = String(id); this.loginId = this.selfId; this.onSelfId?.(this.selfId) }
-      else this.log('warn', 'cg ready without a login id: @-mentions stay disabled')
+      else this.log('warn', `${this.platform} ready without a login id: @-mentions stay disabled`)
       this.onStatus?.('ready')
-      this.log('info', `cg ready selfId=${this.selfId} login=${this.loginId}`)
+      this.log('info', `${this.platform} ready selfId=${this.selfId} login=${this.loginId}`)
       return
     }
     if (frame.op !== 0) return
@@ -533,7 +547,7 @@ export class CrossgramClient extends SatoriClient {
     }).join('').trim()
     const direct = conversation.kind === 'direct'
     this.emit({
-      platform: 'cg', conv: `cg:${conversation.id}`, channelId: String(conversation.id), direct, title: conversation.title ?? '',
+      platform: this.platform, conv: `${this.platform}:${conversation.id}`, channelId: String(conversation.id), direct, title: conversation.title ?? '',
       id: String(message.id), senderId: String(message.senderId), senderName: String(message.senderTitle || message.senderName || message.senderId), senderAvatar: message.senderAvatar,
       ts: message.timestamp, text, raw: message, replyTo: message.replyToId, mentionsSelf,
       self: !!outgoing || message.senderId === this.selfId, media, forwards,

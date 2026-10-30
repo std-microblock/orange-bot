@@ -19,8 +19,8 @@ export interface PlatformEntry {
    * (`conv.slice(0, 2)` / `conv.slice(3)`), and `qq`/`cg` are taken.
    */
   key: string
-  /** `qq-official` | `crossgram` | `satori` — which SatoriClient subclass to build. */
-  kind: 'qq-official' | 'crossgram' | 'satori'
+  /** `crossgram` (orange-message exporter protocol) | `satori` (standard protocol) — which client to build. */
+  kind: 'crossgram' | 'satori'
   endpoint: string
   token: string
   /** Wire `body.platform` this adapter declares; empty = accept any. */
@@ -34,10 +34,12 @@ export interface Config {
   crossgram: SatoriEndpoint
   /**
    * Extra Satori endpoints beyond the two built-ins. `kind` picks the client:
-   * `qq-official` (koishi @satorijs/adapter-qq) and `crossgram` (userbot exporter)
-   * are the wired-in pair; `satori` is the standard-protocol client that covers
-   * any plain Satori adapter. Empty/absent = the classic koishi + crossgram pair,
-   * so existing deployments change nothing until they opt in.
+   * `crossgram` = a platform bridged through crossgram's imPlatform layer (its
+   * orange-ext exporter speaks the same orange-message protocol as the cg
+   * userbot — e.g. a Lark bot; set `protocolPlatform` to the wire platform the
+   * exporter registers it under); `satori` = the standard-protocol client for any
+   * plain Satori adapter. Empty/absent = the classic koishi + crossgram pair, so
+   * existing deployments change nothing until they opt in.
    */
   platforms?: PlatformEntry[]
   /** classifierModel overrides llm.model for the wake classifier and the inbound screen only. */

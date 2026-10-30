@@ -229,7 +229,7 @@ export class OrangeBot {
     this.stickers = new StickerService(this)
     const log = (level: 'info' | 'warn', msg: string) => level === 'info' ? this.log.info(msg) : this.log.warn(msg)
     this.qq = new QQOfficialClient('qq', config.koishi, log)
-    this.cg = new CrossgramClient('cg', config.crossgram, log)
+    this.cg = new CrossgramClient('cg', config.crossgram, log, { sharedAccount: true })
     this.clients.push(this.qq, this.cg)
     for (const e of config.platforms ?? []) {
       // Conversation keys are parsed by prefix length (conv.slice(0, 2) / slice(3)) all
@@ -239,7 +239,11 @@ export class OrangeBot {
         this.log.warn(`platform entry "${e.key}" skipped: key must be exactly 2 chars (a-z0-9), not qq/cg`)
         continue
       }
-      this.clients.push(new StandardSatoriClient(e, log))
+      // crossgram-bridged platforms (e.g. Lark) speak the exporter's orange-message
+      // protocol; everything else runs on the standard Satori client.
+      this.clients.push(e.kind === 'crossgram'
+        ? new CrossgramClient(e.key, e, log, { wirePlatform: e.protocolPlatform || 'qq', sharedAccount: false })
+        : new StandardSatoriClient(e, log))
       this.status[e.key] = 'connecting'
     }
     for (const client of this.clients) {
@@ -332,6 +336,18 @@ export class OrangeBot {
   }
 
   client(platform: PlatformKey) { return this.clients.find((c) => c.platform === platform) }
+
+  /** The crossgram-protocol client serving this conversation's platform, if any (cg userbot, bridged platforms). */
+  private cgClient(conv: string): CrossgramClient | undefined {
+    const c = this.client(conv.slice(0, 2))
+    return c instanceof CrossgramClient ? c : undefined
+  }
+
+  /** Whether this platform's account is shared with a human (the cg userbot) — echo/prefix semantics. */
+  private isUserbot(platform: PlatformKey): boolean {
+    const c = this.client(platform)
+    return c instanceof CrossgramClient && c.sharedAccount
+  }
 
   // -------------------------------------------------------------- identities --
   /**
@@ -490,7 +506,7 @@ export class OrangeBot {
    */
   private learnRole(m: InboundMessage): void {
     if (m.senderRole) { this.rememberRole(m.conv, m.senderId, m.senderRole, m.platform); return }
-    if (m.platform === 'cg') { this.refreshRoles(m.conv); return }
+    if (this.cgClient(m.conv)) { this.refreshRoles(m.conv); return }
     if (this.qqRoleApi === false || this.stopped) return
     if (this.store.memberRole(m.conv, m.senderId)) return
     const seen = this.qqRoleFetched.get(m.conv)
@@ -520,7 +536,7 @@ export class OrangeBot {
    * or ownership handover shows up instead of lingering.
    */
   private refreshRoles(conv: string): void {
-    if (!conv.startsWith('cg:') || !this.servesGroup(conv)) return
+    if (!this.cgClient(conv) || !this.servesGroup(conv)) return
     const seen = this.roleFetched.get(conv)
     if (seen && Date.now() - seen.at < (seen.ok ? ROLE_TTL_MS : 10 * 60_000)) return
     this.roleFetched.set(conv, { at: Date.now(), ok: false })
@@ -529,10 +545,12 @@ export class OrangeBot {
 
   private async fetchRoles(conv: string): Promise<void> {
     const channelId = this.store.conversation(conv)?.channelId ?? conv.slice(3)
-    const members = await this.cg.memberRoles(channelId)
+    const client = this.cgClient(conv)
+    if (!client) return
+    const members = await client.memberRoles(channelId)
     const rows = members.map((m) => ({ id: String(m.id), role: memberRole(m.role) ?? 'member' })).filter((m) => m.id)
     for (const key of [...this.roleCache.keys()]) if (key.startsWith(`${conv} `)) this.roleCache.delete(key)
-    this.store.replaceMemberRoles(conv, rows, 'cg')
+    this.store.replaceMemberRoles(conv, rows, conv.slice(0, 2))
     this.roleFetched.set(conv, { at: Date.now(), ok: true })
     const named = rows.filter((r) => r.role !== 'member').map((r) => `${RANK_LABEL[r.role as Rank]} ${this.display(`${conv.slice(0, 2)}:${r.id}`)}`)
     this.log.info(`roles ${conv}: ${named.join('、') || '没有群主/群管理员'}`)
@@ -542,7 +560,7 @@ export class OrangeBot {
   /** Re-read the roster of every served userbot group (`force` re-checks the TTL). */
   refreshAllRoles(force = false): void {
     for (const row of this.store.conversations()) {
-      if (row.direct || !row.key.startsWith('cg:') || !this.servesGroup(row.key)) continue
+      if (row.direct || !this.cgClient(row.key) || !this.servesGroup(row.key)) continue
       if (force) this.roleFetched.delete(row.key)
       this.refreshRoles(row.key)
     }
@@ -642,7 +660,7 @@ export class OrangeBot {
       self: m.self, mentionsSelf: m.mentionsSelf, fromBot,
     })
     if (!stored) return
-    if (!m.self || m.platform === 'cg') this.store.touchUser(`${m.platform}:${m.senderId}`, m.senderName, m.senderAvatar)
+    if (!m.self || this.isUserbot(m.platform)) this.store.touchUser(`${m.platform}:${m.senderId}`, m.senderName, m.senderAvatar)
     if (!m.direct && !fromBot) this.learnRole(m)
     this.ensureConvAvatar(m)
     this.broadcast({ type: 'message', message: stored, title: m.title })
@@ -693,7 +711,9 @@ export class OrangeBot {
       else if (isAdmin && m.self && AI_COMMAND.test(cmdText)) trigger = 'command'
     } else if (AI_COMMAND.test(cmdText) && ((settings.whitelisted && mayTrigger) || isAdmin)) {
       trigger = 'command'
-    } else if (m.mentionsSelf && settings.whitelisted && mayTrigger && (m.platform === 'qq' || this.store.settings().cgMentionTrigger)) {
+    // an @ always wakes a dedicated bot account (qq official, bridged bot platforms);
+    // only the shared userbot account defers to the cgMentionTrigger switch
+    } else if (m.mentionsSelf && settings.whitelisted && mayTrigger && (!this.isUserbot(m.platform) || this.store.settings().cgMentionTrigger)) {
       // userbot @ is the admin's own account, so only the official bot treats @ as a trigger
       trigger = 'mention'
     } else if (repliedToBot && settings.whitelisted && mayTrigger && !m.self) {
@@ -1005,7 +1025,7 @@ export class OrangeBot {
     root: string,
     rootLocator?: unknown,
   }): Promise<string> {
-    const items = await this.bundleItems(ref)
+    const items = await this.bundleItems(ref, opts.conv)
     const lines: string[] = []
     let nested = 0
     let position = 0
@@ -1070,14 +1090,14 @@ export class OrangeBot {
     return kind === 'image' ? '[图片]' : `[文件 ${media.name ?? ''}]`
   }
 
-  /** The bundle behind a locator (crossgram) or a snapshot (official dump). */
-  private async bundleItems(ref: { locator?: unknown, snapshot?: BundleItem[] }): Promise<BundleItem[]> {
+  /** The bundle behind a locator (crossgram-protocol platforms) or a snapshot (official dump). */
+  private async bundleItems(ref: { locator?: unknown, snapshot?: BundleItem[] }, conv: string): Promise<BundleItem[]> {
     if (ref.snapshot) return ref.snapshot
     if (ref.locator === undefined) return []
     const key = JSON.stringify(ref.locator)
     const cached = this.forwardCache.get(key)
     if (cached && Date.now() - cached.at < FORWARD_CACHE_MS) return cached.items
-    const items = this.cg.forward(ref.locator) as Promise<BundleItem[]>
+    const items = (this.cgClient(conv) ?? this.cg).forward(ref.locator) as Promise<BundleItem[]>
     this.forwardCache.set(key, { at: Date.now(), items })
     try {
       return await items
@@ -1091,12 +1111,12 @@ export class OrangeBot {
    * Every attachment of a bundle *tree*, in the exact order renderForward numbers them
    * (items in order, parts in order, each nested bundle under its own path).
    */
-  private async bundleMedia(ref: { locator?: unknown, snapshot?: BundleItem[] }, base = '1'): Promise<{ path: string, position: number, part: BundleMedia }[]> {
+  private async bundleMedia(ref: { locator?: unknown, snapshot?: BundleItem[] }, base = '1', conv = 'cg:'): Promise<{ path: string, position: number, part: BundleMedia }[]> {
     const walk = async (node: { locator?: unknown, snapshot?: BundleItem[] }, path: string, depth: number): Promise<{ path: string, position: number, part: BundleMedia }[]> => {
       const out: { path: string, position: number, part: BundleMedia }[] = []
       let position = 0
       let nested = 0
-      for (const item of await this.bundleItems(node)) {
+      for (const item of await this.bundleItems(node, conv)) {
         for (const p of item.parts as any[]) {
           if (p.type === 'media') out.push({ path, position: position++, part: p as BundleMedia })
           else if (p.type === 'forward' && depth < FORWARD_MAX_DEPTH) {
@@ -1150,7 +1170,7 @@ export class OrangeBot {
     if (!top) return undefined
     let found: { locator?: unknown, snapshot?: BundleItem[], title: string } = { locator: top.locator, snapshot: top.snapshot, title: String(top.title ?? '') }
     for (const step of steps.slice(1)) {
-      const next = (await this.bundleItems(found)).flatMap((item) => (item.parts as any[]).filter((p) => p.type === 'forward'))[Number(step) - 1] as BundleForward | undefined
+      const next = (await this.bundleItems(found, m.conv)).flatMap((item) => (item.parts as any[]).filter((p) => p.type === 'forward'))[Number(step) - 1] as BundleForward | undefined
       if (!next) return undefined
       found = { locator: next.locator, snapshot: next.snapshot, title: String(next.title ?? '') }
     }
@@ -1617,33 +1637,31 @@ export class OrangeBot {
   /** Quoted message from our history, or (userbot side) fetched live, with its attachments. */
   async resolveQuoted(conv: string, id: string): Promise<{ senderName: string, text: string, media: MediaRow[] } | undefined> {
     const peer = this.store.group(conv).peer
-    // a trigger forwarded from the twin (see forwardReply) quotes a twin message id
+    // a trigger forwarded from the twin (see forwardReply) quotes a twin message id;
+    // crossgram-protocol conversations (cg, bridged platforms) can also ask their own exporter
     const local = this.store.byId(conv, id) ?? (peer ? this.store.byId(peer, id) : undefined)
-    const cgConv = conv.startsWith('cg:') ? conv : peer
-    if (cgConv && (conv.startsWith('cg:') || !local)) {
-      const lookupId = conv.startsWith('cg:') ? id : undefined
-      if (lookupId) {
-        const live = await this.cg.message(cgConv.slice(3), lookupId).catch(() => undefined)
-        if (live) {
-          // The quoted message may never have been stored (it predates the bot), but its
-          // attachments still deserve ids: they are registered here as if it had been.
-          const sink = this.mediaSinkFor({
-            conv: cgConv, messageId: String(live.id), ts: Number(live.timestamp) || Date.now(),
-            senderName: String(live.senderName ?? live.senderTitle ?? ''),
-          })
-          const ids: number[] = []
-          const text = (live.parts as any[]).map((p) => {
-            if (p.type === 'text') return p.text
-            if (p.type === 'media') {
-              const kind = p.kind === 'image' ? 'image' : 'file'
-              const mediaId = sink({ source: 'message', kind, url: p.url, name: p.name, mime: p.mimeType, size: p.size, width: p.width, height: p.height })
-              ids.push(mediaId)
-              return mediaTag(mediaId, kind, p.name)
-            }
-            return p.title ? `[${p.title}]` : ''
-          }).join('')
-          return { senderName: String(live.senderName ?? ''), text, media: ids.map((i) => this.store.media(i)).filter((r): r is MediaRow => !!r) }
-        }
+    const cgClient = this.cgClient(conv)
+    if (cgClient && !local) {
+      const live = await cgClient.message(conv.slice(3), id).catch(() => undefined)
+      if (live) {
+        // The quoted message may never have been stored (it predates the bot), but its
+        // attachments still deserve ids: they are registered here as if it had been.
+        const sink = this.mediaSinkFor({
+          conv, messageId: String(live.id), ts: Number(live.timestamp) || Date.now(),
+          senderName: String(live.senderName ?? live.senderTitle ?? ''),
+        })
+        const ids: number[] = []
+        const text = (live.parts as any[]).map((p) => {
+          if (p.type === 'text') return p.text
+          if (p.type === 'media') {
+            const kind = p.kind === 'image' ? 'image' : 'file'
+            const mediaId = sink({ source: 'message', kind, url: p.url, name: p.name, mime: p.mimeType, size: p.size, width: p.width, height: p.height })
+            ids.push(mediaId)
+            return mediaTag(mediaId, kind, p.name)
+          }
+          return p.title ? `[${p.title}]` : ''
+        }).join('')
+        return { senderName: String(live.senderName ?? ''), text, media: ids.map((i) => this.store.media(i)).filter((r): r is MediaRow => !!r) }
       }
     }
     if (local) return { senderName: local.senderName, text: local.text, media: this.store.mediaOf(local.conv, local.id) }
@@ -2064,7 +2082,7 @@ export class OrangeBot {
       // The label rides along because the echo itself only says `[表情#1]` — the
       // feed numbers attachments, it does not name 表情 — and the stored message
       // should still say which one went out.
-      if (platform === 'cg') {
+      if (this.isUserbot(platform)) {
         const sentText = parts.find((p) => p.type === 'text' || p.type === 'markdown')?.text ?? ''
         const hasSticker = parts.some((p) => p.type === 'sticker')
         if (sentText || hasSticker) this.pendingSelfTexts.push({ conv, text: sentText, sticker: hasSticker, label: hasSticker ? stickerText : undefined, ts: Date.now() })
@@ -2266,7 +2284,7 @@ export class OrangeBot {
     const giveUp = () => ({ error: `这个附件取不到（${failed.join('；') || '没有可用的地址'}）` })
     if (!plan) return (await attempt('附件自己的地址', row.url)) ?? giveUp()
     if (plan.kind === 'locator') {
-      const url = await this.bundleMediaUrl({ locator: plan.locator }, plan.path, plan.position, plan.name).catch(() => undefined)
+      const url = await this.bundleMediaUrl({ locator: plan.locator }, plan.path, plan.position, plan.name, row.conv).catch(() => undefined)
       return (await attempt('转发里的地址', url)) ?? giveUp()
     }
     // The official side: the url the platform printed for the attachment is tried first (it is
@@ -2279,7 +2297,7 @@ export class OrangeBot {
       failed.push('userbot 侧也没有找到同一份记录（对方可能撤回了，或者这两个群还没配对）')
       return giveUp()
     }
-    const url = await this.bundleMediaUrl({ locator: twin.locator }, twin.path, twin.position, plan.name).catch(() => undefined)
+    const url = await this.bundleMediaUrl({ locator: twin.locator }, twin.path, twin.position, plan.name, this.store.group(row.conv).peer ?? row.conv).catch(() => undefined)
     return (await attempt('userbot 侧同一份', url)) ?? giveUp()
   }
 
@@ -2289,8 +2307,8 @@ export class OrangeBot {
   }
 
   /** The url of one attachment of a bundle: picked by position, checked by name when we have one. */
-  private async bundleMediaUrl(ref: { locator?: unknown, snapshot?: BundleItem[] }, path: string, position: number, name?: string): Promise<string | undefined> {
-    const all = await this.bundleMedia(ref)
+  private async bundleMediaUrl(ref: { locator?: unknown, snapshot?: BundleItem[] }, path: string, position: number, name?: string, conv = 'cg:'): Promise<string | undefined> {
+    const all = await this.bundleMedia(ref, '1', conv)
     const at = all.filter((m) => m.path === path)
     const picked = (name ? at.find((m) => sameMedia(m.part.name, name)) : undefined)
       ?? at.find((m) => m.position === position)
@@ -2316,7 +2334,7 @@ export class OrangeBot {
       for (const [index, fwd] of forwards.entries()) {
         if (fwd.locator === undefined) continue
         if (plan.forward && fwd.title && String(fwd.title) !== plan.forward) continue
-        const all = await this.bundleMedia({ locator: fwd.locator }, String(index + 1)).catch(() => [])
+        const all = await this.bundleMedia({ locator: fwd.locator }, String(index + 1), peer).catch(() => [])
         const picked = (plan.name ? all.find((m) => sameMedia(m.part.name, plan.name)) : undefined)
           ?? all.find((m) => m.path === plan.path && m.position === plan.position)
         if (picked) return { locator: fwd.locator, path: picked.path, position: picked.position }
@@ -2337,7 +2355,7 @@ export class OrangeBot {
       const top = this.forwardsOf(m)[Number(steps[0]) - 1]
       if (!top) return undefined
       // walk from the message's forward, so the paths are the same ones the render labels
-      const found = (await this.bundleMedia(top)).find((x) => x.path === path && x.position === index - 1)
+      const found = (await this.bundleMedia(top, '1', m.conv)).find((x) => x.path === path && x.position === index - 1)
       if (!found) return undefined
       const kind = found.part.kind === 'image' ? 'image' : 'file'
       return this.store.media(this.mediaId({
