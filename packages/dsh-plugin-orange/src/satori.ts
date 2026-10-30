@@ -164,10 +164,14 @@ export abstract class SatoriClient {
    */
   onMedia?: MediaSink
 
-  constructor(readonly platform: PlatformKey, protected readonly cfg: SatoriEndpoint, protected readonly log: (level: 'info' | 'warn', msg: string) => void) {}
+  constructor(readonly platform: PlatformKey, protected readonly cfg: SatoriEndpoint, protected readonly log: (level: 'info' | 'warn', msg: string) => void) {
+    this.extBase = cfg.endpoint.replace(/\/$/, '') + '/orange'
+  }
 
   /** Wire platform name for the Satori API header; the built-ins are all `qq`. */
   protected apiPlatform = 'qq'
+  /** Where this platform's orange-ext routes live (a same-server second instance uses its own). */
+  protected extBase = ''
 
   /** Binds this client's media sink to the message currently being rendered. */
   protected mediaSink(context: Omit<MediaEntry, keyof MediaSpec>): MediaSpecSink | undefined {
@@ -254,7 +258,7 @@ export abstract class SatoriClient {
   }
 
   async ext<T = any>(method: string, body: unknown): Promise<T> {
-    const response = await fetch(`${this.cfg.endpoint}/orange/${method}`, {
+    const response = await fetch(`${this.extBase}/${method}`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${this.cfg.token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -482,10 +486,14 @@ export class CrossgramClient extends SatoriClient {
   /** Wire `login.platform` the exporter registers this platform under (satori ready frame). */
   private readonly wirePlatform: string
 
-  constructor(platform: PlatformKey, cfg: SatoriEndpoint, log: (level: 'info' | 'warn', msg: string) => void, opts: { wirePlatform?: string, sharedAccount?: boolean } = {}) {
+  constructor(platform: PlatformKey, cfg: SatoriEndpoint & { extPath?: string }, log: (level: 'info' | 'warn', msg: string) => void, opts: { wirePlatform?: string, sharedAccount?: boolean } = {}) {
     super(platform, cfg, log)
     this.wirePlatform = opts.wirePlatform ?? 'qq'
     this.sharedAccount = opts.sharedAccount ?? false
+    // API calls carry this platform's own bot identity (same exporter serves several)
+    this.apiPlatform = this.wirePlatform
+    // a second orange-ext instance serving another platform lives under its own path
+    this.extBase = (cfg.endpoint.replace(/\/$/, '') + (cfg.extPath || '/orange'))
   }
 
   protected eventsUrl(): string { return this.cfg.endpoint.replace(/^http/, 'ws') + '/v1/events' }
@@ -508,6 +516,10 @@ export class CrossgramClient extends SatoriClient {
     const body = frame.body
     this.nextSeq(body.sn)
     if (body.type !== 'orange-message') return
+    // One exporter serves several bridged platforms and every connected client sees
+    // every orange-message frame; each keeps only its own platform's (frames from an
+    // exporter too old to stamp `platform` are kept — there is only one platform then).
+    if (body.platform !== undefined && body.platform !== this.wirePlatform) return
     // `_payload` bypasses the Satori wire's snake_case key transform, so the
     // rendered shape below keeps its original camelCase fields.
     const { conversation, message, outgoing } = body._payload ?? {}

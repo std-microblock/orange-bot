@@ -25,6 +25,12 @@ export interface PlatformEntry {
   token: string
   /** Wire `body.platform` this adapter declares; empty = accept any. */
   protocolPlatform?: string
+  /**
+   * Base path of this platform's orange-ext routes under `endpoint`, when it is
+   * not the default `/orange` — a second orange-ext instance on the same server
+   * (e.g. the Lark one next to the QQ one) must use its own path.
+   */
+  extPath?: string
 }
 
 export interface Config {
@@ -72,6 +78,8 @@ export const Config: z<Config> = z.object({
     token: z.string().required(),
     /** Wire `body.platform` this adapter declares; empty = accept any. */
     protocolPlatform: z.string().default(''),
+    /** This platform's orange-ext base path under `endpoint`, when not `/orange`. */
+    extPath: z.string().default(''),
   })).default([]),
   llm: z.object({
     baseURL: z.string().required(),
