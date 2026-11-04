@@ -48,8 +48,8 @@ export function ConvSettings({ conv, session }: { conv: Conv, session: string | 
       </section>
       <section className={css.section}>
         <h4>工作区</h4>
-        <div className={css.hint}>该群 agent session 的工作目录，留空用全局；对端同群自动同步。改动后重置 session 才生效</div>
-        <input className={css.text} value={ws} placeholder="留空 = 全局 workspace" onChange={(e) => setWs(e.target.value)} onBlur={() => save({ workspace: ws.trim() })} />
+        <div className={css.hint}>该群 agent session 的工作目录：目录名（与全局 workspace 并行）或绝对路径，留空用全局；对端同群自动同步。改动后重置 session 才生效</div>
+        <input className={css.text} value={ws} placeholder="目录名（与全局 workspace 并行）或绝对路径" onChange={(e) => setWs(e.target.value)} onBlur={() => save({ workspace: ws.trim() })} />
       </section>
       <section className={css.section}>
         <h4>操作</h4>

@@ -206,7 +206,7 @@ export function registerWebApi(ctx: any, getBot: () => OrangeBot | undefined): v
           const src = isDefault ? { projects: settings.ownProjects, assistTopics: settings.assistTopics, prompts: settings.prompts, personaExtra: settings.personaExtra } : w
           return {
             path: path_, default: isDefault,
-            groups: Object.entries(settings.groups).filter(([, g]) => (g.workspace || bot.config.workspace) === path_).map(([k]) => k),
+            groups: Object.entries(settings.groups).filter(([k, g]) => g.workspace && bot.workspaceOf(k) === path_).map(([k]) => k),
             agents: readFileSafe(join(path_, 'AGENTS.md')),
             overridden: !isDefault && !!w,
             projects: src?.projects ?? [],

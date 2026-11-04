@@ -8,7 +8,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
-import { extname, join } from 'node:path'
+import { dirname, extname, isAbsolute, join } from 'node:path'
 import type { Config, GroupSettings, OwnProject } from './config.ts'
 import { Store, type MediaRow, type StoredMessage } from './store.ts'
 import { CrossgramClient, QQOfficialClient, StandardSatoriClient, SatoriClient, memberRole, stripMarkdown, type InboundMessage, type MediaEntry, type MediaRef, type MediaSpec, type MediaSpecSink, type MemberRole, type OutboundPart, type PlatformKey } from './satori.ts'
@@ -1710,9 +1710,11 @@ export class OrangeBot {
   async createAgent(sessionId: string, role: 'chat' | 'task', title: string, conv: string, admin = false, model?: string): Promise<any> {
     const ctx = this.ctx as any
     // Per-group workspace isolation; a bad path must not brick the group, so fall back to global.
-    const wsPath = this.store.group(conv).workspace || this.config.workspace
+    const wsPath = this.workspaceOf(conv)
     let workspace: any
     try {
+      // the registry only owns existing directories — make sure the resolved one is there
+      await mkdir(wsPath, { recursive: true })
       workspace = await ctx.workspaceRegistry.create(wsPath)
     } catch (e) {
       this.log.warn(`workspace ${wsPath} unusable (${(e as Error).message}), falling back to ${this.config.workspace}`)
@@ -1788,6 +1790,21 @@ export class OrangeBot {
   }
 
   /**
+   * A workspace setting as the registry sees it: an absolute path, or a name that
+   * resolves next to the global workspace — a peer directory, never a subdirectory.
+   * '' = the global workspace itself.
+   */
+  resolveWorkspace(raw: string): string {
+    if (!raw) return this.config.workspace
+    return isAbsolute(raw) ? raw : join(dirname(this.config.workspace), raw)
+  }
+
+  /** The workspace a conversation's sessions run in. */
+  workspaceOf(conv: string): string {
+    return this.resolveWorkspace(this.store.group(conv).workspace || '')
+  }
+
+  /**
    * Every workspace path the operator may configure: the configured default, the
    * paths groups point at, and paths that already carry overrides — the 工作区 tab
    * and the AGENTS.md write endpoint both allow exactly these.
@@ -1795,7 +1812,7 @@ export class OrangeBot {
   knownWorkspaces(): Set<string> {
     const settings = this.store.settings()
     const out = new Set([this.config.workspace, ...Object.keys(settings.workspaces ?? {})])
-    for (const g of Object.values(settings.groups)) if (g.workspace) out.add(g.workspace)
+    for (const g of Object.values(settings.groups)) if (g.workspace) out.add(this.resolveWorkspace(g.workspace))
     return out
   }
 
