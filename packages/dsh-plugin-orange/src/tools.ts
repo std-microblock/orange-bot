@@ -177,7 +177,7 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
 
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'react',
-    description: 'Put a reaction on a message instead of replying, e.g. to acknowledge ("ok"/"received"/"thumb"/"bot"). Works on the userbot side; on official-bot-only groups it may be unavailable.',
+    description: 'Put a reaction on a message instead of replying, e.g. to acknowledge ("ok"/"received"/"thumb"/"bot"). Works on the userbot and bridged-bot (e.g. Lark) sides; on official-bot-only groups it may be unavailable.',
     parameters: {
       seq: { type: 'integer', required: true, description: 'Message #seq.' },
       kind: { type: 'string', enum: ['ok', 'received', 'thumb', 'bot'], required: true },

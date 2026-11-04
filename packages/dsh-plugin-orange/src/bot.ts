@@ -2189,7 +2189,7 @@ export class OrangeBot {
     this.log.info(`auto sticker ${conv}: 发 #${row.id}（${row.desc || '无描述'}）${result.dryRun ? '，dry-run 只记录' : ''}`)
   }
 
-  /** "Received / ok" acknowledgements: reactions only exist on the userbot side. */
+  /** "Received / ok" acknowledgements: reactions exist on the userbot and bridged-bot sides (per-platform emoji keys). */
   async react(m: { conv: string, id: string } | InboundMessage, kind: 'ok' | 'bot' | 'thumb' | string): Promise<boolean> {
     const keys: Record<string, string> = { ok: '1:124', bot: '2:129302', thumb: '1:76', received: '1:428' }
     const key = keys[kind] ?? kind
@@ -2197,6 +2197,14 @@ export class OrangeBot {
     if (this.store.group(conv).dryRun) { this.store.recordResponse({ ts: Date.now(), conv, trigger: 'react', text: `[react ${kind}]`, dryRun: true, delivered: false }); return true }
     if (conv.startsWith('cg:')) {
       await this.cg.react(conv.slice(3), m.id, [key])
+      this.store.recordResponse({ ts: Date.now(), conv, trigger: 'react', text: `[react ${kind}]`, dryRun: false, delivered: true })
+      return true
+    }
+    // bridged bot platforms (e.g. Lark) speak their own emoji keys, not QQ's `1:124`
+    const client = this.cgClient(conv)
+    if (client && conv.startsWith('lk:')) {
+      const larkKeys: Record<string, string> = { ok: 'OK', received: 'DONE', thumb: 'THUMBSUP', bot: 'APPLAUSE' }
+      await client.react(conv.slice(3), m.id, [larkKeys[kind] ?? String(kind).toUpperCase()])
       this.store.recordResponse({ ts: Date.now(), conv, trigger: 'react', text: `[react ${kind}]`, dryRun: false, delivered: true })
       return true
     }
