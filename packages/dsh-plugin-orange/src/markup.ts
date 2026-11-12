@@ -6,7 +6,7 @@
  * containing `<forward id="1.1">`), and a non-greedy `/<forward[\s\S]*?<\/forward>/` stops at the
  * *inner* closing tag: the outer block comes out cut in half and the rest leaks into the page as
  * raw markup (`</forward>` and the rest of the message) — that is what the panel used to draw for a
- * nested forward, and what `pairText()` used to leave in the text it compares. Here a block is
+ * nested forward. Here a block is
  * found by counting its tags, so nesting is exact at any depth.
  *
  * This text is written for the model, so it must not be shown to a person as it stands: the same

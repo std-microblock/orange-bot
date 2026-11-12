@@ -1,9 +1,9 @@
 /**
  * Satori bridge. Adapters normalize their platform into one message model, keyed
- * `<platform>:<channel id>`. Two are wired in with all their quirks — koishi
- * (QQ official bot, `qq:`) and crossgram (userbot, `cg:`) — and any further
- * Satori endpoint runs on the standard-protocol client below (StandardSatoriClient);
- * ids from one platform are never valid on another.
+ * `<platform>:<channel id>`. Every platform comes in through config.platforms and
+ * gets the client its `kind` picks: koishi (official bot), crossgram (orange-message
+ * exporter protocol — userbot or a bridged platform) or plain Satori
+ * (StandardSatoriClient); ids from one platform are never valid on another.
  */
 import WebSocket from 'ws'
 import h from '@satorijs/element'
@@ -166,8 +166,10 @@ export abstract class SatoriClient {
 
   constructor(readonly platform: PlatformKey, protected readonly cfg: SatoriEndpoint, protected readonly log: (level: 'info' | 'warn', msg: string) => void) {}
 
-  /** Wire platform name for the Satori API header; the built-ins are all `qq`. */
-  protected apiPlatform = 'qq'
+  /** Wire platform name for the Satori API header; each client sets its own. */
+  protected apiPlatform = ''
+  /** Whether this platform renders markdown natively (qq official does, via `<qq:markdown>`). */
+  readonly rendersMarkdown: boolean = false
 
   /** Binds this client's media sink to the message currently being rendered. */
   protected mediaSink(context: Omit<MediaEntry, keyof MediaSpec>): MediaSpecSink | undefined {
@@ -366,14 +368,24 @@ export function renderQuote(quote: any, sink?: MediaSpecSink): { senderName: str
   return { senderName, text, media }
 }
 
-/** koishi + @satorijs/adapter-qq (official bot). */
+/** koishi + @satorijs/adapter-qq (official bot), or whatever adapter that host exposes. */
 export class QQOfficialClient extends SatoriClient {
+  override readonly rendersMarkdown = true
+  /** Wire `body.platform`/adapter name the koishi host registers the bot under. */
+  private readonly wirePlatform: string
+
+  constructor(platform: PlatformKey, cfg: SatoriEndpoint, log: (level: 'info' | 'warn', msg: string) => void, opts: { wirePlatform?: string } = {}) {
+    super(platform, cfg, log)
+    this.wirePlatform = opts.wirePlatform ?? 'qq'
+    this.apiPlatform = this.wirePlatform
+  }
+
   protected eventsUrl(): string { return this.cfg.endpoint.replace(/^http/, 'ws') + '/v1/events' }
   protected identify(ws: WebSocket): void { ws.send(JSON.stringify({ op: 3, body: { token: this.cfg.token } })) }
 
   protected handleFrame(frame: any): void {
     if (frame.op === 4) {
-      const login = frame.body.logins?.find((l: any) => l.platform === 'qq' && l.adapter === 'qq')
+      const login = frame.body.logins?.find((l: any) => l.platform === this.wirePlatform && l.adapter === this.wirePlatform)
       // A reconnect while koishi/the adapter is still coming up delivers a login
       // entry without an id. Overwriting selfId with it silently disables every
       // @-mention (renderElements can no longer tell our id apart), so only ever
@@ -381,16 +393,16 @@ export class QQOfficialClient extends SatoriClient {
       const id = login?.self_id ?? login?.user?.id
       if (id) this.selfId = String(id)
       if (this.selfId) this.onSelfId?.(this.selfId)
-      else this.log('warn', 'qq ready without a login id: @-mentions stay disabled')
+      else this.log('warn', `${this.platform} ready without a login id: @-mentions stay disabled`)
       this.onStatus?.('ready')
-      this.log('info', `qq ready selfId=${this.selfId}`)
+      this.log('info', `${this.platform} ready selfId=${this.selfId}`)
       return
     }
     if (frame.op !== 0) return
     const body = frame.body
     this.nextSeq(body.sn)
-    if (body.type !== 'message-created' || body.platform !== 'qq' || !body.message) return
-    const conv = `qq:${String(body.channel?.id ?? body.guild?.id)}`
+    if (body.type !== 'message-created' || body.platform !== this.wirePlatform || !body.message) return
+    const conv = `${this.platform}:${String(body.channel?.id ?? body.guild?.id)}`
     const messageId = String(body.message.id)
     const ts = body.timestamp ?? Date.now()
     const senderName = String(body.member?.nick ?? body.user?.name ?? body.user?.id)
@@ -415,7 +427,7 @@ export class QQOfficialClient extends SatoriClient {
     // and the pictures inside become viewable at all, which they never were.
     const dump = parseForwardDump(text)
     this.emit({
-      platform: 'qq', conv, channelId: String(body.channel?.id ?? body.guild?.id), direct,
+      platform: this.platform, conv, channelId: String(body.channel?.id ?? body.guild?.id), direct,
       title: body.guild?.name ?? body.channel?.name ?? '',
       id: messageId, senderId: String(body.user?.id), senderName, senderAvatar: body.user?.avatar,
       ts, text: dump ? forwardPlaceholder(1, dump.title, bundlePreview(dump.items)) : text, raw: body.message, replyTo: quoteId,
@@ -467,25 +479,32 @@ export class QQOfficialClient extends SatoriClient {
   }
 }
 
-/** crossgram satori-exporter (userbot, the admin's own QQ account; also any further platform bridged through crossgram's imPlatform layer). */
+/** crossgram satori-exporter (a userbot or any platform bridged through crossgram's imPlatform layer). */
 export class CrossgramClient extends SatoriClient {
-  /** userbot account sends prefix; the account is shared with a human. */
+  /** Default send prefix on shared-account platforms; the account is shared with a human. */
   static readonly PREFIX = '🤖 '
   /** Effective prefix; the bot refreshes it from settings before each send. */
-  sendPrefix = CrossgramClient.PREFIX
+  sendPrefix: string
+  /** Configured prefix this platform falls back to when the global switch is on. */
+  readonly sendPrefixDefault: string
+  /** reaction kind → this platform's emoji key. */
+  readonly emojiKeys: Record<string, string>
   /**
-   * Whether this account is a human's own account shared with the bot (the cg
-   * userbot): echo detection, the 🤖 marker and the twin pairing below all hang
-   * off this; a crossgram-bridged bot account (e.g. a Lark bot) sets it false.
+   * Whether this account is a human's own account shared with the bot (a
+   * userbot): echo detection and the send marker hang off this. A bridged bot
+   * account (e.g. a Lark bot) sets it false.
    */
   readonly sharedAccount: boolean
   /** Wire `login.platform` the exporter registers this platform under (satori ready frame). */
   private readonly wirePlatform: string
 
-  constructor(platform: PlatformKey, cfg: SatoriEndpoint, log: (level: 'info' | 'warn', msg: string) => void, opts: { wirePlatform?: string, sharedAccount?: boolean } = {}) {
+  constructor(platform: PlatformKey, cfg: SatoriEndpoint, log: (level: 'info' | 'warn', msg: string) => void, opts: { wirePlatform?: string, sharedAccount?: boolean, emojiKeys?: Record<string, string>, sendPrefix?: string } = {}) {
     super(platform, cfg, log)
     this.wirePlatform = opts.wirePlatform ?? 'qq'
     this.sharedAccount = opts.sharedAccount ?? false
+    this.sendPrefixDefault = opts.sendPrefix ?? CrossgramClient.PREFIX
+    this.sendPrefix = this.sharedAccount ? this.sendPrefixDefault : ''
+    this.emojiKeys = opts.emojiKeys ?? {}
     // API calls carry this platform's own bot identity (same exporter serves several)
     this.apiPlatform = this.wirePlatform
   }
@@ -540,7 +559,7 @@ export class CrossgramClient extends SatoriClient {
     const forwards: InboundMessage['forwards'] = []
     let mentionsSelf = false
     const sink = this.mediaSink({
-      conv: `cg:${conversation.id}`, messageId: String(message.id), ts: message.timestamp,
+      conv: `${this.platform}:${conversation.id}`, messageId: String(message.id), ts: message.timestamp,
       senderName: String(message.senderTitle || message.senderName || message.senderId),
     })
     const text = (message.parts as any[]).map((part) => {

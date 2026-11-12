@@ -64,7 +64,7 @@ export function registerWebApi(ctx: any, getBot: () => OrangeBot | undefined): v
       if (req.method === 'GET' && path === '/overview') {
         const settings = bot.store.settings()
         // Titles and avatars are resolved, not stored: an official-bot group has
-        // neither of its own, and a stored copy would survive a pairing correction.
+        // neither of its own, and the stored copy could outlive a correction.
         const conversations = bot.store.conversations().map((c) => ({ ...c, title: bot.store.convTitle(c.key), avatar: bot.store.convAvatar(c.key), settings: bot.store.group(c.key) }))
         // groups configured but not seen yet
         for (const key of Object.keys(settings.groups)) {
@@ -79,7 +79,7 @@ export function registerWebApi(ctx: any, getBot: () => OrangeBot | undefined): v
           prompts: { chat: settings.prompts.chat || CHAT_PERSONA, task: settings.prompts.task || TASK_PERSONA },
           classifierModel: settings.classifierModel || bot.config.llm.classifierModel || bot.config.llm.model,
         }
-        return json(res, 200, { status: bot.status, conversations, settings: withDefaults, price: PRICE })
+        return json(res, 200, { status: bot.status, labels: bot.platformLabels(), conversations, settings: withDefaults, price: PRICE })
       }
       if (req.method === 'GET' && path === '/messages') {
         const conv = q.get('conv') ?? ''

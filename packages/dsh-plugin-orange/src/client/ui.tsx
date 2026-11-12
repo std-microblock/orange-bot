@@ -10,6 +10,8 @@ export interface Ctx {
   route: Route
   byKey: Map<string, Conv>
   convs: Conv[]
+  /** Platform display names from the config (panel labels). */
+  labels: Record<string, string>
   tick: number
   /** Bumped only by sticker events, so the sticker page can reload on its own. */
   stickerTick: number

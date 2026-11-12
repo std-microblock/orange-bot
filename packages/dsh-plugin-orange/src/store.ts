@@ -6,7 +6,6 @@ import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { DEFAULT_SETTINGS, type GroupSettings, type OwnProject, type RuntimeSettings } from './config.ts'
-import { groupAvatar, pairText } from './pairing.ts'
 
 export interface StoredMessage {
   seq: number
@@ -207,22 +206,6 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS stickers_enabled ON stickers(enabled, weight);
     `)
-    this.backfillNtext()
-  }
-
-  /** Older rows predate the normalized-text column used for peer matching. */
-  private backfillNtext(): void {
-    const rows = this.db.prepare('SELECT seq, text FROM messages WHERE ntext IS NULL').all() as { seq: number, text: string }[]
-    if (!rows.length) return
-    const update = this.db.prepare('UPDATE messages SET ntext = ? WHERE seq = ?')
-    this.db.exec('BEGIN')
-    try {
-      for (const row of rows) update.run(pairText(row.text), row.seq)
-      this.db.exec('COMMIT')
-    } catch (error) {
-      this.db.exec('ROLLBACK')
-      throw error
-    }
   }
 
   // ---- kv / settings -------------------------------------------------------
@@ -276,66 +259,29 @@ export class Store {
     this.set('settings', next)
   }
 
-  /**
-   * Effective settings for a conversation. A paired conversation is one physical
-   * group seen through two bots: the panel shows both rows and the user may flip
-   * the switch on either one, while only the owner side acts on it. Reads merge
-   * with the twin, writes propagate (see updateGroup), so the two rows cannot
-   * drift apart and silently disable a group.
-   */
+  /** Effective settings for a conversation (each conversation is its own row; nothing is shared across platforms). */
   group(conv: string): GroupSettings {
-    const own = this.settings().groups[conv] ?? { whitelisted: false, dryRun: false, listen: false, tags: [], note: '' }
-    const twin = own.peer ? this.settings().groups[own.peer] : undefined
-    if (!twin) return own
-    return {
-      ...own,
-      whitelisted: own.whitelisted || twin.whitelisted,
-      listen: own.listen || twin.listen,
-      dryRun: own.dryRun || twin.dryRun,
-      triggerLimit: own.triggerLimit ?? twin.triggerLimit,
-    }
+    return this.settings().groups[conv] ?? { whitelisted: false, dryRun: false, listen: false, tags: [], note: '' }
   }
 
   updateGroup(conv: string, patch: Partial<GroupSettings>): GroupSettings {
     const settings = structuredClone(this.settings())
     const next = { ...this.group(conv), ...patch }
     settings.groups[conv] = next
-    // mirror the switches onto the twin: typing /ai.white or clicking the panel row
-    // on the history-only side must still arm the side that owns the triggers
-    const twin = next.peer ? settings.groups[next.peer] : undefined
-    if (twin) {
-      if ('whitelisted' in patch) twin.whitelisted = next.whitelisted
-      if ('listen' in patch) twin.listen = next.listen
-      if ('dryRun' in patch) twin.dryRun = next.dryRun
-      if ('triggerLimit' in patch) twin.triggerLimit = next.triggerLimit
-      if ('workspace' in patch) twin.workspace = next.workspace
-    }
     this.saveSettings(settings)
     return next
   }
 
   // ---- messages ------------------------------------------------------------
   insertMessage(m: Omit<StoredMessage, 'seq'>): StoredMessage | undefined {
-    const result = this.db.prepare(`INSERT OR IGNORE INTO messages(conv, id, sender_id, sender_name, ts, text, raw, reply_to, ntext, self, mentions_self, from_bot)
-      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      m.conv, m.id, m.senderId, m.senderName, m.ts, m.text, m.raw, m.replyTo ?? null, pairText(m.text),
+    const result = this.db.prepare(`INSERT OR IGNORE INTO messages(conv, id, sender_id, sender_name, ts, text, raw, reply_to, self, mentions_self, from_bot)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      m.conv, m.id, m.senderId, m.senderName, m.ts, m.text, m.raw, m.replyTo ?? null,
       m.self ? 1 : 0, m.mentionsSelf ? 1 : 0, m.fromBot ? 1 : 0,
     )
     if (!result.changes) return undefined
     this.db.prepare('UPDATE conversations SET last_ts = MAX(COALESCE(last_ts, 0), ?), count = count + 1 WHERE key = ?').run(m.ts, m.conv)
     return { ...m, seq: Number(result.lastInsertRowid) }
-  }
-
-  /**
-   * Messages from the *other* platform with the same normalized text and a nearly
-   * identical timestamp — the raw evidence for "these two conversations are one
-   * physical group". Direct conversations cannot be a group twin.
-   */
-  twins(ntext: string, seq: number, ts: number, windowMs: number, prefix: string): { conv: string, senderName: string, ts: number }[] {
-    const rows = this.db.prepare(`SELECT m.conv, m.sender_name, m.ts FROM messages m JOIN conversations c ON c.key = m.conv
-      WHERE m.ntext = ? AND m.seq != ? AND m.conv LIKE ? AND c.direct = 0 AND ABS(m.ts - ?) <= ?
-      ORDER BY ABS(m.ts - ?) LIMIT 8`).all(ntext, seq, `${prefix}%`, ts, windowMs, ts) as any[]
-    return rows.map((r) => ({ conv: r.conv, senderName: r.sender_name ?? '', ts: r.ts }))
   }
 
   markFromBot(conv: string, id: string): void {
@@ -400,38 +346,6 @@ export class Store {
     if (opts.until) { where.push('ts <= ?'); args.push(opts.until) }
     const sql = `SELECT * FROM messages ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY seq DESC LIMIT ?`
     return this.db.prepare(sql).all(...args, opts.limit).map((r) => this.row(r)).reverse()
-  }
-
-  findSimilar(conv: string, text: string, ts: number, windowMs = 15_000): StoredMessage | undefined {
-    const r = this.db.prepare('SELECT * FROM messages WHERE conv = ? AND ts BETWEEN ? AND ? AND text = ? ORDER BY ABS(ts - ?) LIMIT 1')
-      .get(conv, ts - windowMs, ts + windowMs, text, ts)
-    return r ? this.row(r) : undefined
-  }
-
-  /**
-   * The twin-side row of one physical message: the same words at the same second, on the other
-   * side of a paired group. Both platforms stamp one message with the same second-aligned time,
-   * and the comparison runs on `ntext` — pairText() already drops quotes, mentions, media
-   * placeholders and punctuation, so the two sides' differing renderings of the same message
-   * (an @ here, a `[图片 #12]` there) still match; `twins()` pairs groups with the same evidence.
-   * Words *and* second matching twice is not evidence (people repeat each other constantly), so an
-   * ambiguous match yields nothing.
-   */
-  twinRow(conv: string, text: string, ts: number): StoredMessage | undefined {
-    const ntext = pairText(text)
-    if (!ntext) return undefined
-    const rows = this.db.prepare('SELECT * FROM messages WHERE conv = ? AND ts = ? AND ntext = ? LIMIT 2').all(conv, ts, ntext)
-    return rows.length === 1 ? this.row(rows[0]) : undefined
-  }
-
-  /**
-   * Write a quote into a stored message, in exactly the shape the platform uses for its own
-   * copies (`<quote>昵称：正文</quote> 正文`, see renderQuote in satori.ts). Used when the official
-   * side dropped a reply's referenced body and the userbot side of the same group knows it — see
-   * OrangeBot.borrowQuote. `ntext` needs no rewrite: pairText() strips quote blocks anyway.
-   */
-  setQuote(conv: string, id: string, text: string): void {
-    this.db.prepare('UPDATE messages SET text = ? WHERE conv = ? AND id = ?').run(text, conv, id)
   }
 
   // ---- media ---------------------------------------------------------------
@@ -506,11 +420,8 @@ export class Store {
   }
 
   /**
-   * Display name. Official-bot groups carry no name in their events, so a paired
-   * conversation borrows the userbot twin's name — resolved at read time, never
-   * copied into the row, so a corrected pairing cannot leave a stale name behind.
-   * The same holds for private chats: the official C2C API sends no nickname, but
-   * the person may have been seen (and named) in a group.
+   * Display name. The official C2C API sends no nickname at all, so a private
+   * chat falls back to the name the person was last seen under in a group.
    */
   convTitle(key: string): string {
     const c = this.conversation(key)
@@ -520,17 +431,12 @@ export class Store {
       if (name && name !== c.channelId && !/^[0-9A-F]{32}$/i.test(name)) return name
       return ''
     }
-    const peer = this.group(key).peer
-    return peer ? (this.conversation(peer)?.title ?? '') : ''
+    return ''
   }
 
-  /** Avatar, same idea: a paired official group can use the userbot group's public QQ avatar. */
+  /** Avatar of the conversation's own row. */
   convAvatar(key: string): string | undefined {
-    const own = this.conversation(key)?.avatar
-    if (own) return own
-    const peer = this.group(key).peer
-    if (peer?.startsWith('cg:') && /^\d+$/.test(peer.slice(3))) return groupAvatar(peer.slice(3))
-    return undefined
+    return this.conversation(key)?.avatar
   }
 
   setConversationAvatar(key: string, avatar: string): void {
@@ -541,30 +447,19 @@ export class Store {
     this.db.prepare('UPDATE conversations SET avatar = NULL WHERE key = ?').run(key)
   }
 
-  // ---- peer links ----------------------------------------------------------
   /**
-   * Link a physical group's two views and mirror the switches, so flipping either
-   * row in the panel arms the side that actually receives the triggers.
+   * Groups used to be paired across platforms (the removed twin feature); a stored
+   * settings row may still carry a `peer` key from it. Drop those and the learned
+   * `botTwinIds` once at startup, so dead data cannot leak back into the panel.
    */
-  linkPeers(qq: string, cg: string): void {
-    if (!qq.startsWith('qq:') || !cg.startsWith('cg:')) return
+  dropLegacyPeers(): void {
+    let touched = false
     const settings = structuredClone(this.settings())
-    const qqOwn = settings.groups[qq]
-    const cgGroup: GroupSettings = settings.groups[cg] ?? { whitelisted: false, dryRun: false, listen: false, tags: [], note: '' }
-    // a brand-new official row inherits the userbot row's configuration
-    settings.groups[qq] = qqOwn ? { ...qqOwn, peer: cg } : { ...cgGroup, peer: cg }
-    settings.groups[cg] = { ...cgGroup, peer: qq }
-    this.saveSettings(settings)
-  }
-
-  /** Drop a peer link without touching the switches (used when a pairing was wrong). */
-  clearPeer(conv: string): string | undefined {
-    const settings = structuredClone(this.settings())
-    const gone = settings.groups[conv]?.peer
-    if (!gone || !settings.groups[conv]) return undefined
-    delete settings.groups[conv].peer
-    this.saveSettings(settings)
-    return gone
+    for (const group of Object.values(settings.groups)) {
+      if (group && 'peer' in group) { delete (group as any).peer; touched = true }
+    }
+    if (touched) this.saveSettings(settings)
+    if (this.get<unknown[]>('botTwinIds', []).length) this.set('botTwinIds', [])
   }
 
   // ---- users ---------------------------------------------------------------

@@ -135,7 +135,7 @@ export interface OutgoingPart {
  * *platform*, never of the wording: the official bot has to carry it as QQ's own markup inside the
  * body (`atMarkup`, qq.ts — a separate `<qq:markdown>` element per text run would lose the blank
  * line after our quote line, and markup sitting before the first markdown element comes back
- * escapeMarkdown'd), while the userbot takes a Satori `at` element. `markdown` only says whether
+ * escapeMarkdown'd), while every other platform takes a Satori `at` element. `markdown` only says whether
  * the *text* goes out as markdown, and the agent may override it either way, so it must not decide
  * this.
  *
@@ -148,8 +148,8 @@ export interface OutgoingPart {
  * quote, which it drops on markdown messages): it has to start the body, so it is written first
  * and the mentions follow it. The userbot keeps a native quote part and passes no line here.
  */
-export function mentionBody(pieces: MentionPiece[], opts: { platform: string, markdown?: boolean, quoteLine?: string }): OutgoingPart[] {
-  if (opts.platform !== 'qq') {
+export function mentionBody(pieces: MentionPiece[], opts: { atViaMarkup: boolean, markdown?: boolean, quoteLine?: string }): OutgoingPart[] {
+  if (!opts.atViaMarkup) {
     return pieces.map((piece) => piece.type === 'at'
       ? { type: 'at', userId: piece.id, ...(piece.name ? { name: piece.name } : {}) }
       : { type: 'text', text: piece.text })

@@ -186,7 +186,7 @@ export class StickerService {
     for (const person of opts.at ?? []) {
       parts.push({ type: 'at', userId: person.id, ...(person.name ? { name: person.name } : {}) }, { type: 'text', text: ' ' })
     }
-    if (row.reference && conv.startsWith('cg:')) {
+    if (row.reference && !!this.bot.cgClient(conv)) {
       parts.push({
         type: 'sticker',
         sticker: {
@@ -207,7 +207,7 @@ export class StickerService {
       sticker: true,
       automatic: opts.automatic,
       stickerLabel: stickerLabel(row),
-      context: `表情 #${row.id}｜${row.desc || '(无描述)'}${row.reference && conv.startsWith('cg:') ? '' : '｜（这个平台不支持原生表情，按图片发出）'}`,
+      context: `表情 #${row.id}｜${row.desc || '(无描述)'}${row.reference && !!this.bot.cgClient(conv) ? '' : '｜（这个平台不支持原生表情，按图片发出）'}`,
     })
     if (!result.dryRun) {
       b.store.bumpStickerUse(row.id)
@@ -227,7 +227,7 @@ export class StickerService {
     if (!opts.refresh && this.remoteCache && now - this.remoteCache.at < REMOTE_TTL_MS) {
       return { ...this.remoteCache, cached: true }
     }
-    const result = await this.bot.cg.ext<{ stickers: RemoteSticker[], errors?: string[] }>('sticker.list', {})
+    const result = await this.bot.userbotClient()?.ext<{ stickers: RemoteSticker[], errors?: string[] }>('sticker.list', {})
     const stickers = (result?.stickers ?? []).filter((s) => s?.stickerId)
     this.remoteCache = { at: now, stickers }
     if (result?.errors?.length) this.bot.log.warn(`sticker.list: ${result.errors.join('; ')}`)
@@ -502,7 +502,7 @@ export class StickerService {
       try { return await fetchBytes(remote.url) } catch (error) { failures.push(`url: ${(error as Error).message}`) }
     }
     try {
-      const asset = await this.bot.cg.ext<{ data: string, mimeType?: string }>('sticker.asset', { providerId: remote.providerId, stickerId: remote.stickerId })
+      const asset = await this.bot.userbotClient()?.ext<{ data: string, mimeType?: string }>('sticker.asset', { providerId: remote.providerId, stickerId: remote.stickerId })
       if (!asset?.data) throw new Error('bridge returned no bytes')
       return Buffer.from(asset.data, 'base64')
     } catch (error) {

@@ -1,4 +1,4 @@
-/** Right drawer: per-conversation switches, group profile (classifier + chat), pairing, actions. */
+/** Right drawer: per-conversation switches, group profile (classifier + chat), actions. */
 import { useEffect, useState } from 'react'
 import { Button, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import { History, RotateCcw, Zap } from 'lucide-react'
@@ -11,9 +11,8 @@ export function ConvSettings({ conv, session }: { conv: Conv, session: string | 
   const [g, setG] = useState<Group>(conv.settings)
   const [tags, setTags] = useState(conv.settings.tags.join(', '))
   const [note, setNote] = useState(conv.settings.note)
-  const [peer, setPeer] = useState(conv.settings.peer ?? '')
   const [ws, setWs] = useState(conv.settings.workspace ?? '')
-  useEffect(() => { setG(conv.settings); setTags(conv.settings.tags.join(', ')); setNote(conv.settings.note); setPeer(conv.settings.peer ?? ''); setWs(conv.settings.workspace ?? '') }, [conv.key, conv.settings])
+  useEffect(() => { setG(conv.settings); setTags(conv.settings.tags.join(', ')); setNote(conv.settings.note); setWs(conv.settings.workspace ?? '') }, [conv.key, conv.settings])
   const save = async (patch: Partial<Group>) => {
     setG((cur) => ({ ...cur, ...patch }))
     try { await api('/group', { conv: conv.key, patch }); reload(); toast('已保存') } catch (e) { toast((e as Error).message) }
@@ -41,14 +40,8 @@ export function ConvSettings({ conv, session }: { conv: Conv, session: string | 
         <textarea className={css.text} rows={3} value={note} placeholder="这个群主要聊什么，分类器和主会话都会读" onChange={(e) => setNote(e.target.value)} onBlur={() => save({ note })} />
       </section>
       <section className={css.section}>
-        <h4>对端</h4>
-        <div className={css.hint}>同一个群在另一个 bot 下的 id，会自动识别</div>
-        <input className={css.text} value={peer} placeholder="cg:群号 / qq:openid" onChange={(e) => setPeer(e.target.value)} onBlur={() => save({ peer: peer.trim() })} />
-        {g.peer && <div className={css.peer}>→ <ConvLink conv={g.peer} /></div>}
-      </section>
-      <section className={css.section}>
         <h4>工作区</h4>
-        <div className={css.hint}>该群 agent session 的工作目录：目录名（与全局 workspace 并行）或绝对路径，留空用全局；对端同群自动同步。改动后重置 session 才生效</div>
+        <div className={css.hint}>该群 agent session 的工作目录：目录名（与全局 workspace 并行）或绝对路径，留空用全局。改动后重置 session 才生效</div>
         <input className={css.text} value={ws} placeholder="目录名（与全局 workspace 并行）或绝对路径" onChange={(e) => setWs(e.target.value)} onBlur={() => save({ workspace: ws.trim() })} />
       </section>
       <section className={css.section}>

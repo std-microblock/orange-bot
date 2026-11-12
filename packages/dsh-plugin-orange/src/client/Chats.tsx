@@ -8,21 +8,21 @@ import { ChatView } from './ChatView.tsx'
 import css from './Chats.module.css'
 
 type Filter = 'all' | 'white' | 'dm' | (string & {})
-const BASE_FILTERS = [['all', '全部'], ['white', '白名单'], ['qq', '官方'], ['cg', 'userbot'], ['dm', '私聊']] as const
+const BASE_FILTERS = [['all', '全部'], ['white', '白名单'], ['dm', '私聊']] as const
 
 const blank = (key: string): Conv => ({ key, platform: key.slice(0, 2) as Conv['platform'], channelId: key.slice(3), title: '', direct: false, lastTs: 0, count: 0, settings: { whitelisted: false, dryRun: false, listen: false, tags: [], note: '' } })
 
 export function Chats() {
-  const { convs, byKey, route, go, tick } = usePanel()
+  const { convs, byKey, route, go, tick, labels } = usePanel()
   const [q, setQ] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const [previews, setPreviews] = useState<Record<string, string>>({})
   useEffect(() => { void api('/previews').then(setPreviews).catch(() => {}) }, [tick])
-  // platforms beyond the built-in pair get their own filter chip, labelled by key
+  // every platform present gets its own filter chip, labelled from the config
   const filters = useMemo(() => {
-    const extra = [...new Set(convs.map((c) => c.platform))].filter((p) => p !== 'qq' && p !== 'cg').map((p) => [p, p] as const)
+    const extra = [...new Set(convs.map((c) => c.platform))].map((p) => [p, labels[p] ?? p] as const)
     return [...BASE_FILTERS, ...extra]
-  }, [convs])
+  }, [convs, labels])
   const list = useMemo(() => convs
     .filter((c) => !q || (c.title + c.key).toLowerCase().includes(q.toLowerCase()))
     .filter((c) => filter === 'all' || (filter === 'white' && c.settings.whitelisted) || (filter === 'dm' && c.direct) || (filter === c.platform && !c.direct))
@@ -45,7 +45,7 @@ export function Chats() {
                   <span className={css.preview}>{previews[c.key] ?? (c.direct ? '私聊' : '暂无消息')}</span>
                   {c.settings.dryRun && <Badge tone="warn">dry</Badge>}
                   {c.settings.whitelisted && <Badge tone="ok">白名单</Badge>}
-                  <Badge>{c.platform === 'qq' ? '官' : c.platform === 'cg' ? 'U' : c.platform}</Badge>
+                  <Badge>{(labels[c.platform] ?? c.platform).slice(0, 2)}</Badge>
                 </span>
               </span>
             </button>

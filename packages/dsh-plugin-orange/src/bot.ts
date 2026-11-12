@@ -1,5 +1,5 @@
 /**
- * The orange engine: ingests both platforms, records everything, decides when
+ * The orange engine: ingests every configured platform, records everything, decides when
  * to wake the chat agent (direct triggers + batched classifier), and owns the
  * per-conversation dsh sessions plus background task sessions.
  */
@@ -10,10 +10,10 @@ import { readFileSync } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { dirname, extname, isAbsolute, join } from 'node:path'
 import type { Config, GroupSettings, OwnProject } from './config.ts'
+import { QQ_EMOJI_KEYS } from './config.ts'
 import { Store, type MediaRow, type StoredMessage } from './store.ts'
 import { CrossgramClient, QQOfficialClient, StandardSatoriClient, SatoriClient, memberRole, stripMarkdown, type InboundMessage, type MediaEntry, type MediaRef, type MediaSpec, type MediaSpecSink, type MemberRole, type OutboundPart, type PlatformKey } from './satori.ts'
 import { bundlePreview, forwardPlaceholder, mediaTag, parseForwardDump, type BundleForward, type BundleItem, type BundleMedia } from './media.ts'
-import { PAIR_CONFIRM, PAIR_MIN_CHARS, PAIR_WINDOW_MS, groupAvatar, pairText, senderMatch } from './pairing.ts'
 import { chat, parseJsonLoose } from './llm.ts'
 import type { MentionCandidate } from './mentions.ts'
 import { humanizeAtMarkup } from './qq.ts'
@@ -66,8 +66,6 @@ interface ConvState {
   waking?: boolean
   /** newest cross-group event already shown to this conversation's agent */
   eventSeq: number
-  /** physical messages that already woke this conversation (see twinTrigger) */
-  triggered: { ts: number, text: string, at: number }[]
   /** the bot's current burst of messages here, for the automatic 表情 (see noteSend) */
   segments?: MessageSegments
 }
@@ -89,8 +87,6 @@ export interface Turn {
 
 /** Triggers landing inside this window become one agent turn (default, overridable in settings). */
 const WAKE_MERGE_MS = 2_000
-/** The twin side's copy of one message still counts as the same trigger this long after it. */
-const TWIN_TRIGGER_MS = 2_000
 /** Deliver anyway after waiting this long for a busy agent, rather than sitting on a reply. */
 const WAKE_IDLE_MAX_MS = 10 * 60_000
 /** Most messages one event carries; a longer backlog keeps the newest and notes the gap. */
@@ -103,24 +99,21 @@ const FORWARD_MAX_LINES = 200
 const FORWARD_MAX_DEPTH = 3
 /** One bundle fetched from crossgram is reused this long while several of its attachments are resolved. */
 const FORWARD_CACHE_MS = 30_000
-/** How far apart the two platforms' copies of one forwarded message can be. */
-const TWIN_FORWARD_MS = 120_000
 
 /**
  * How to get the url of one attachment inside a merged forward again — what `media.plan` holds.
  * `locator` is the *message's* (top-level) bundle and `path`/`position` say where inside it the
  * attachment sits: the platform only ever gives out a locator for a whole bundle, so walking from
  * the top is the one address that stays valid for nested bundles too. An attachment of the
- * *official* rendering has no locator at all (that platform never hands us one), so its plan carries
- * what it takes to find the same attachment on the userbot side instead: the bundle title, where it
- * sat, when the message arrived and who sent it.
+ * *official* rendering has no locator at all (that platform never hands us one), so its plan
+ * carries the dump: the bundle title, where it sat, when the message arrived and who sent it.
  */
 interface ForwardPlan {
   kind: 'locator' | 'dump'
   path: string
   position: number
   name?: string
-  /** The title of the message's *outermost* bundle — what the twin conversation's copy is matched by. */
+  /** The title of the message's *outermost* bundle — what the dump is matched by. */
   forward: string
   ts: number
   senderName: string
@@ -199,17 +192,15 @@ function describeTriggers(batch: PendingWake[], tag?: (m: InboundMessage) => str
 
 export class OrangeBot {
   readonly store: Store
-  readonly qq: QQOfficialClient
-  readonly cg: CrossgramClient
-  /** Every connected platform, the two built-ins first; config `platforms` entries append. */
+  /** Every connected platform, one client per config.platforms entry. */
   readonly clients: SatoriClient[] = []
   private conv = new Map<string, ConvState>()
   private sessions = new Map<string, ChatSession>()
   /** sessionId -> current turn being served, for send_message routing */
   readonly turns = new Map<string, Turn>()
-  readonly status: Record<string, string> = { qq: 'connecting', cg: 'connecting' }
+  readonly status: Record<string, string> = {}
   private errorTimes: number[] = []
-  /** Messages we sent on cg, by text, to tell bot vs human on the shared account. */
+  /** Messages we sent on a shared-account platform, by text, to tell bot vs human on that account. */
   private pendingSelfTexts: { conv: string, text: string, sticker?: boolean, label?: string, ts: number }[] = []
   /** Merged-forward bundles already fetched, so resolving one message's attachments costs one call. */
   private forwardCache = new Map<string, { at: number, items: Promise<BundleItem[]> }>()
@@ -220,30 +211,36 @@ export class OrangeBot {
   listeners = new Set<(event: any) => void>()
   /** Set on shutdown: in-flight handlers must not touch the closed database. */
   private stopped = false
+  /** Send markers of the shared-account platforms: any message starting with one is a bot's output, whichever view it came back through. */
+  private readonly botMarkers: string[] = []
 
   constructor(readonly ctx: Context, readonly config: Config) {
     this.store = new Store(config.dataDir)
     this.log = createLog(config.dataDir)
-    for (const id of this.store.get<string[]>('botTwinIds', [])) this.botTwinIds.add(id)
     this.mediaDir = '/var/cache/orange-tmp/media'
     this.stickers = new StickerService(this)
     const log = (level: 'info' | 'warn', msg: string) => level === 'info' ? this.log.info(msg) : this.log.warn(msg)
-    this.qq = new QQOfficialClient('qq', config.koishi, log)
-    this.cg = new CrossgramClient('cg', config.crossgram, log, { sharedAccount: true })
-    this.clients.push(this.qq, this.cg)
-    for (const e of config.platforms ?? []) {
+    for (const e of config.platforms) {
       // Conversation keys are parsed by prefix length (conv.slice(0, 2) / slice(3)) all
-      // over the codebase, so a platform key must be exactly that long — and must not
-      // shadow the built-ins.
-      if (!/^[a-z0-9]{2}$/.test(e.key) || e.key === 'qq' || e.key === 'cg') {
-        this.log.warn(`platform entry "${e.key}" skipped: key must be exactly 2 chars (a-z0-9), not qq/cg`)
+      // over the codebase, so a platform key must be exactly that long, and unique.
+      if (!/^[a-z0-9]{2}$/.test(e.key) || this.status[e.key] !== undefined) {
+        this.log.warn(`platform entry "${e.key}" skipped: key must be exactly 2 chars (a-z0-9) and not a duplicate`)
         continue
       }
-      // crossgram-bridged platforms (e.g. Lark) speak the exporter's orange-message
-      // protocol; everything else runs on the standard Satori client.
-      this.clients.push(e.kind === 'crossgram'
-        ? new CrossgramClient(e.key, e, log, { wirePlatform: e.protocolPlatform || 'qq', sharedAccount: false })
-        : new StandardSatoriClient(e, log))
+      // koishi = the official bot via koishi; crossgram = the orange-message exporter
+      // protocol (a userbot or a bridged platform, e.g. Lark); satori = the standard protocol.
+      this.clients.push(e.kind === 'koishi'
+        ? new QQOfficialClient(e.key, e, log, { wirePlatform: e.protocolPlatform || 'qq' })
+        : e.kind === 'crossgram'
+          ? new CrossgramClient(e.key, e, log, {
+            wirePlatform: e.protocolPlatform || 'qq',
+            sharedAccount: !!e.sharedAccount,
+            // the schema fills an absent emojiKeys with {} (not undefined), so test for content
+            emojiKeys: e.emojiKeys && Object.keys(e.emojiKeys).length ? e.emojiKeys : QQ_EMOJI_KEYS,
+            sendPrefix: e.sendPrefix,
+          })
+          : new StandardSatoriClient(e, log))
+      if (e.kind === 'crossgram' && e.sharedAccount) this.botMarkers.push((e.sendPrefix ?? CrossgramClient.PREFIX).trim())
       this.status[e.key] = 'connecting'
     }
     for (const client of this.clients) {
@@ -266,10 +263,9 @@ export class OrangeBot {
     for (const c of this.clients) c.start()
     void this.refreshKoishiCommands()
     this.koishiTimer = setInterval(() => void this.refreshKoishiCommands(), 10 * 60_000)
-    // Earlier builds paired groups on "same text, same moment", which random pairs
-    // real traffic constantly: re-derive the links and the official group names from
-    // what is actually stored before trusting anything.
-    setTimeout(() => void this.repairPeers().catch((e) => this.reportError('peer repair', e)), 5_000)
+    // Groups used to be paired across platforms (the removed peer feature); drop the
+    // leftovers so they cannot leak back into the panel or the settings file.
+    this.store.dropLegacyPeers()
     this.nameTimer = setInterval(() => void this.refreshGroupNames().catch(() => {}), 30 * 60_000)
     // Group roles: the official bot gets them with every group message, the userbot
     // side has to be asked, so re-check each served userbot group now and then.
@@ -284,10 +280,20 @@ export class OrangeBot {
   private koishiTimer?: NodeJS.Timeout
   private koishiCommands = { prefixes: ['/', '!', '！'], names: new Set<string>() }
 
+  /** The shared-account (userbot) client, if one is configured — the 表情 pool lives on its QQ account. */
+  userbotClient(): CrossgramClient | undefined {
+    return this.clients.find((c): c is CrossgramClient => c instanceof CrossgramClient && c.sharedAccount)
+  }
+
+  /** The first koishi-served platform, if one is configured; its command table drives koishiHandled. */
+  private koishi(): QQOfficialClient | undefined {
+    return this.clients.find((c): c is QQOfficialClient => c instanceof QQOfficialClient)
+  }
+
   private async refreshKoishiCommands(): Promise<void> {
     try {
-      const r = await this.qq.ext<{ prefixes: string[], commands: string[] }>('commands', {})
-      this.koishiCommands = { prefixes: r.prefixes.filter(Boolean), names: new Set(r.commands.map((c) => c.toLowerCase())) }
+      const r = await this.koishi()?.ext<{ prefixes: string[], commands: string[] }>('commands', {})
+      if (r) this.koishiCommands = { prefixes: r.prefixes.filter(Boolean), names: new Set(r.commands.map((c) => c.toLowerCase())) }
     } catch (error) {
       this.log.warn(`koishi command list: ${(error as Error).message}`)
     }
@@ -314,7 +320,7 @@ export class OrangeBot {
    * asking the plugin, and koishi answers it.
    */
   private koishiHandled(m: StoredMessage): boolean {
-    return m.conv.startsWith('qq:') && !AI_COMMAND.test(commandText(m.text)) && this.isKoishiCommand(m.text)
+    return !!this.qqClient(m.conv) && !AI_COMMAND.test(commandText(m.text)) && this.isKoishiCommand(m.text)
   }
   stop(): void {
     this.stopped = true
@@ -337,10 +343,26 @@ export class OrangeBot {
 
   client(platform: PlatformKey) { return this.clients.find((c) => c.platform === platform) }
 
-  /** The crossgram-protocol client serving this conversation's platform, if any (cg userbot, bridged platforms). */
-  private cgClient(conv: string): CrossgramClient | undefined {
+  /** Panel display names for every platform: the entry's label, else the kind's default. */
+  platformLabels(): Record<string, string> {
+    const out: Record<string, string> = {}
+    for (const c of this.clients) {
+      const entry = this.config.platforms.find((e) => e.key === c.platform)
+      out[c.platform] = entry?.label || (c instanceof QQOfficialClient ? '官方 bot' : c instanceof CrossgramClient && c.sharedAccount ? 'userbot' : c.platform)
+    }
+    return out
+  }
+
+  /** The crossgram-protocol client serving this conversation's platform, if any (userbot, bridged platforms). */
+  cgClient(conv: string): CrossgramClient | undefined {
     const c = this.client(conv.slice(0, 2))
     return c instanceof CrossgramClient ? c : undefined
+  }
+
+  /** The koishi-served (official bot) client of this conversation's platform, if any. */
+  qqClient(conv: string): QQOfficialClient | undefined {
+    const c = this.client(conv.slice(0, 2))
+    return c instanceof QQOfficialClient ? c : undefined
   }
 
   /** Whether this platform's account is shared with a human (the cg userbot) — echo/prefix semantics. */
@@ -418,9 +440,7 @@ export class OrangeBot {
   isSelfId(platform: PlatformKey, userId: string): boolean {
     if (!userId) return false
     if (this.store.get(`selfId:${platform}`, '') === userId) return true
-    if (this.client(platform)?.selfId === userId) return true
-    // the official bot's account, seen through the userbot's view of the same group
-    return platform === 'cg' && this.botTwinIds.has(userId)
+    return this.client(platform)?.selfId === userId
   }
 
   /**
@@ -441,7 +461,7 @@ export class OrangeBot {
     }
     for (const row of this.store.senders(conv, 500)) add(row.id, row.name, this.isSelfId(platform, row.id))
     for (const row of this.store.memberRoles(conv)) add(row.userId, this.store.user(`${conv.slice(0, 2)}:${row.userId}`)?.name, this.isSelfId(platform, row.userId))
-    for (const id of [...this.clients.map((c) => c.selfId), ...this.botTwinIds]) add(id, '橘波特', true)
+    for (const id of this.clients.map((c) => c.selfId)) add(id, '橘波特', true)
     return out
   }
 
@@ -478,12 +498,9 @@ export class OrangeBot {
   /** undefined = not tried yet, false = the official app may not query members at all. */
   private qqRoleApi?: boolean
 
-  /** Whether this group is one the bot actually serves (whitelisted, or a twin of one). */
+  /** Whether this group is one the bot actually serves (whitelisted). */
   private servesGroup(conv: string): boolean {
-    const group = this.store.group(conv)
-    if (group.whitelisted) return true
-    const peer = group.peer
-    return !!peer && this.store.group(peer).whitelisted
+    return this.store.group(conv).whitelisted
   }
 
   private rememberRole(conv: string, userId: string, role: MemberRole, source: string): void {
@@ -512,11 +529,11 @@ export class OrangeBot {
     const seen = this.qqRoleFetched.get(m.conv)
     if (seen && Date.now() - seen.at < (seen.ok ? 60_000 : 6 * 3600_000)) return
     const channelId = this.store.conversation(m.conv)?.channelId ?? m.conv.slice(3)
-    void this.qq.memberRole(channelId, m.senderId).then((info) => {
+    void this.qqClient(m.conv)?.memberRole(channelId, m.senderId).then((info) => {
       this.qqRoleApi = true
       this.qqRoleFetched.set(m.conv, { at: Date.now(), ok: true })
       const role = memberRole(info?.role)
-      if (role) this.rememberRole(m.conv, m.senderId, role, 'qq')
+      if (role) this.rememberRole(m.conv, m.senderId, role, m.conv.slice(0, 2))
     }).catch((error) => {
       const detail = (error as Error).message
       if (/11253|无接口访问权限/.test(detail)) {
@@ -571,7 +588,7 @@ export class OrangeBot {
     if (!s) {
       const last = this.store.recent(conv, 1)[0]
       const lastBot = this.store.db.prepare('SELECT MAX(ts) ts FROM messages WHERE conv = ? AND from_bot = 1').get(conv) as { ts: number | null }
-      s = { classifiedSeq: last?.seq ?? 0, deliveredSeq: last?.seq ?? 0, lastBotTs: lastBot?.ts ?? 0, proactive: [], pending: [], eventSeq: this.store.maxEventId(), triggered: [] }
+      s = { classifiedSeq: last?.seq ?? 0, deliveredSeq: last?.seq ?? 0, lastBotTs: lastBot?.ts ?? 0, proactive: [], pending: [], eventSeq: this.store.maxEventId() }
       this.conv.set(conv, s)
     }
     return s
@@ -581,21 +598,16 @@ export class OrangeBot {
   /**
    * Whether this conversation's content may be recorded. The userbot account is
    * shared with the admin, so the raw stream carries his private chats and every
-   * group the account sits in; only what the bot actually serves is kept:
-   * whitelisted groups (and their twin row on the other platform, needed for
-   * pairing), plus the admin's own private chat with the bot.
+   * group the account sits in; only what the bot actually serves is kept —
+   * whitelisted groups, plus the admin's own private chat with the bot.
    */
   servesConversation(m: InboundMessage): boolean {
     if (m.direct) {
       const partner = m.channelId || m.conv.slice(3)
       if (this.isAdmin(m.platform, partner)) return true
-      if (m.platform === 'cg' && this.botTwinIds.has(partner)) return true
       return this.store.get(`selfId:${m.platform}`, '') === partner
     }
-    const group = this.store.group(m.conv)
-    if (group.whitelisted) return true
-    const peer = group.peer
-    return !!peer && this.store.group(peer).whitelisted
+    return this.store.group(m.conv).whitelisted
   }
 
   async onMessage(m: InboundMessage): Promise<void> {
@@ -607,7 +619,7 @@ export class OrangeBot {
     const served = this.servesConversation(m)
     if (m.direct && !served) return // somebody else's private chat: no row, no text, nothing
     this.store.upsertConversation({ key: m.conv, platform: m.platform, channelId: m.channelId, title: observed, titleSrc: m.direct ? 'dm' : m.platform, direct: m.direct })
-    if (m.platform === 'qq' && !m.direct && !observed) void this.refreshGroupName(m.conv).catch(() => {})
+    if (this.qqClient(m.conv) && !m.direct && !observed) void this.refreshGroupName(m.conv).catch(() => {})
     if (!served) {
       // A group we do not serve is tracked by name only, so the panel can offer it for
       // whitelisting; none of its content is stored. Admin commands still run here —
@@ -631,27 +643,18 @@ export class OrangeBot {
         selfLabel = this.pendingSelfTexts[idx].label
         this.pendingSelfTexts.splice(idx, 1)
       }
-      if (m.platform === 'qq') fromBot = true
+      // a dedicated bot account's own messages are always the bot's
+      if (this.qqClient(m.conv)) fromBot = true
     }
-    if (m.text.startsWith(CrossgramClient.PREFIX.trim()) && m.self) fromBot = true
-    // the official bot's own messages echoed through the userbot's view of the same group
-    if (m.platform === 'cg' && !m.self && this.botTwinIds.has(m.senderId)) fromBot = true
+    // a message carrying one of our send markers is one of ours, whichever view it came back through
+    const marker = this.botMarkers.find((pfx) => m.text.startsWith(pfx))
+    if (marker && m.self) fromBot = true
     const enriched = await this.enrichText(m)
     // Our own 表情, remembered with its identity: `[表情#1]` says nothing about
     // which one it was, and both the panel and the agent read this text.
     const text = selfLabel ?? enriched
     /** Command matching must look past the QQ quote prefix. */
     const cmdText = commandText(m.text)
-    // A cg message identical to something the official bot just sent in the paired group is its echo.
-    if (m.platform === 'cg' && !m.self && !fromBot) {
-      const peer = this.store.group(m.conv).peer
-      const twin = peer ? this.store.findSimilar(peer, text, m.ts, 30_000) : undefined
-      if (twin?.fromBot) {
-        fromBot = true
-        this.botTwinIds.add(m.senderId)
-        this.store.set('botTwinIds', [...this.botTwinIds])
-      }
-    }
     // initialize cursors before this message lands so it counts as new
     this.state(m.conv)
     const stored = this.store.insertMessage({
@@ -664,41 +667,17 @@ export class OrangeBot {
     if (!m.direct && !fromBot) this.learnRole(m)
     this.ensureConvAvatar(m)
     this.broadcast({ type: 'message', message: stored, title: m.title })
-    // One physical group can be visible through both bots. Pair them via `peer`;
-    // the official-bot side owns the group, the userbot side only records history.
-    // The bots' own messages count as evidence too: the same send shows up on both
-    // sides, which is exactly what a link needs.
-    this.learnPeer(m, stored)
-    // The official API does not always hand a group reply's referenced body over (see borrowQuote):
-    // the twin side of the same group knows it, so complete the row before anyone reads it.
-    void this.borrowQuote(m.conv, stored).catch((e) => this.reportError(`quote backfill ${m.conv}`, e))
     if (fromBot) return
-    // Our own userbot sends echo back through the official bot as plain group messages.
-    if (m.platform === 'qq' && m.text.startsWith(CrossgramClient.PREFIX.trim())) { this.store.markFromBot(m.conv, m.id); return }
+    // A message carrying our send marker is a bot's output, not a person: never a trigger.
+    if (marker && m.text.startsWith(marker)) { this.store.markFromBot(m.conv, m.id); return }
     const state = this.state(m.conv)
     state.lastInbound = m
-
-    const owner = this.ownerOf(m.conv)
-    if (owner !== m.conv) {
-      // history-only side: the official-bot twin owns the triggers of this group.
-      // The official QQ API never says *which* message a group reply quotes — it only
-      // forwards the quoted body, and the adapter drops even that object's id — so
-      // "replied to 橘波特" is invisible on the owner side: only here, where crossgram
-      // carries the real reply id, can it be seen. Hand it over.
-      const quoted = m.replyTo ? this.store.byId(m.conv, m.replyTo) : undefined
-      if (quoted?.fromBot && served) {
-        void this.forwardReply(owner, m).catch((e) => this.reportError(`reply forward ${owner}`, e))
-        return
-      }
-      if (m.mentionsSelf || AI_COMMAND.test(cmdText)) this.log.info(`no trigger ${m.conv}: peer ${owner} owns this group`)
-      return
-    }
 
     // ---- commands ---------------------------------------------------------
     const isAdmin = this.isAdmin(m.platform, m.senderId)
     if (await this.handleCommand(m, isAdmin, cmdText)) return
     // messages koishi answers itself ("@bot /ac", "/抽奖", …) are not for the agent
-    if (m.platform === 'qq' && !AI_COMMAND.test(cmdText) && this.isKoishiCommand(cmdText)) return
+    if (this.qqClient(m.conv) && !AI_COMMAND.test(cmdText) && this.isKoishiCommand(cmdText)) return
 
     // ---- trigger decision -------------------------------------------------
     const settings = this.store.group(m.conv)
@@ -732,123 +711,31 @@ export class OrangeBot {
     }
   }
 
-  /** userbot-side user ids of the official bot account (learned from echoes of our qq sends). */
-  readonly botTwinIds = new Set<string>()
-
-  /** Conversation avatar: the userbot side is a public URL by its own group number; DMs use the peer's avatar. */
+  /** Conversation avatar: a crossgram group with a numeric id is a QQ group with a public avatar URL; DMs use the peer's avatar. */
   private ensureConvAvatar(m: InboundMessage): void {
     if (m.direct) {
       if (!m.self && m.senderAvatar && this.store.conversation(m.conv)?.avatar !== m.senderAvatar) this.store.setConversationAvatar(m.conv, m.senderAvatar)
       return
     }
-    // Official-bot groups have no group number of their own; their avatar is derived
-    // from the *correct* twin when the panel asks for it (store.convAvatar), never
-    // stored, so a bad pairing cannot leave a wrong picture behind.
-    if (m.platform !== 'cg' || !/^\d+$/.test(m.channelId)) return
+    if (!this.cgClient(m.conv) || !/^\d+$/.test(m.channelId)) return
     const url = groupAvatar(m.channelId)
     if (this.store.conversation(m.conv)?.avatar !== url) this.store.setConversationAvatar(m.conv, url)
-  }
-
-  /**
-   * The conversation that handles triggers for this physical group: the official bot,
-   * because its messages carry the passive-reply ids. But the official bot only sees
-   * what the platform pushes to it — some groups never grant it the full stream — so
-   * a twin that has gone quiet hands the triggers back to the userbot side, which
-   * always sees the group.
-   */
-  ownerOf(conv: string): string {
-    const peer = this.store.group(conv).peer
-    if (!peer) return conv
-    if (conv.startsWith('qq:') || !peer.startsWith('qq:')) return conv
-    const last = this.store.recent(peer, 1)[0]?.ts ?? 0
-    return Date.now() - last < 6 * 3600_000 ? peer : conv
-  }
-
-  // ---- peer learning -------------------------------------------------------
-  /**
-   * Evidence that two conversations are the same physical group: distinct matching
-   * messages, each normalized to the words actually typed, seen seconds apart from
-   * the same person on both platforms. Kept per conversation and per candidate, so a
-   * well-supported pair always beats a coincidental one.
-   */
-  private peerHits = new Map<string, Map<string, Set<string>>>()
-  private guildFetched = new Map<string, { at: number, ok: boolean }>()
-
-  private vote(conv: string, other: string, text: string): void {
-    let byOther = this.peerHits.get(conv)
-    if (!byOther) this.peerHits.set(conv, byOther = new Map())
-    let texts = byOther.get(other)
-    if (!texts) {
-      if (byOther.size >= 64) return // a group cannot have more plausible twins than this
-      byOther.set(other, texts = new Set())
-    }
-    if (texts.size < 40) texts.add(text)
-  }
-
-  private hits(conv: string, other: string): number {
-    return this.peerHits.get(conv)?.get(other)?.size ?? 0
-  }
-
-  private learnPeer(m: InboundMessage, stored: StoredMessage): void {
-    if (m.direct) return
-    const ntext = pairText(stored.text)
-    if (ntext.length < PAIR_MIN_CHARS) return
-    const twins = this.store.twins(ntext, stored.seq, stored.ts, PAIR_WINDOW_MS, m.platform === 'qq' ? 'cg:' : 'qq:')
-    for (const twin of twins) {
-      if (!senderMatch(twin.senderName, stored.senderName)) continue
-      this.vote(m.conv, twin.conv, ntext)
-      this.vote(twin.conv, m.conv, ntext)
-      this.reconcile(m.conv)
-    }
-  }
-
-  /** Re-point a conversation at its best-supported twin; weak or conflicting links lose. */
-  private reconcile(conv: string): void {
-    const byOther = this.peerHits.get(conv)
-    if (!byOther) return
-    let best = ''
-    let bestN = 0
-    for (const [other, texts] of byOther) if (texts.size > bestN) { best = other; bestN = texts.size }
-    if (!best || bestN < PAIR_CONFIRM) return
-    const current = this.store.group(conv).peer
-    if (current === best) return
-    // an established twin with equal or better evidence keeps the link
-    if (current && (byOther.get(current)?.size ?? 0) >= bestN) return
-    // do not steal a twin that has stronger evidence for somebody else
-    const rival = this.store.group(best).peer
-    if (rival && rival !== conv && this.hits(best, rival) > bestN) return
-    this.linkPeers(conv, best, bestN)
-  }
-
-  /** Link the two views of one group, releasing whatever either side was paired with before. */
-  private linkPeers(a: string, b: string, evidence = 0): void {
-    const qq = a.startsWith('qq:') ? a : b
-    const cg = qq === a ? b : a
-    if (!qq.startsWith('qq:') || !cg.startsWith('cg:')) return
-    for (const stale of [this.store.group(qq).peer, this.store.group(cg).peer]) {
-      if (!stale || stale === a || stale === b) continue
-      const back = this.store.group(stale).peer
-      this.store.clearPeer(stale)
-      // release the far end too when it still points at the twin we just dropped
-      if (back && back !== a && back !== b && this.store.group(back).peer === stale) this.store.clearPeer(back)
-      this.log.info(`unpaired ${stale} (superseded by ${qq} <-> ${cg})`)
-    }
-    this.store.linkPeers(qq, cg)
-    this.log.info(`paired ${qq} <-> ${cg} (evidence ${evidence})`)
-    this.broadcast({ type: 'settings' })
   }
 
   // ---- official group names ------------------------------------------------
   /**
    * QQ group events carry only an opaque openid — no name, no avatar. Ask the
-   * adapter for the real group name, so an official-only group is never shown (or
-   * named) after whatever unrelated group it was once mis-paired with.
+   * adapter for the real group name, so an official-served group is never shown
+   * (or named) after the opaque id it arrived with.
    */
+  private guildFetched = new Map<string, { at: number, ok: boolean }>()
+
   async refreshGroupName(conv: string, force = false): Promise<void> {
-    if (!conv.startsWith('qq:')) return
+    const client = this.qqClient(conv)
+    if (!client) return
     const row = this.store.conversation(conv)
     if (row?.direct) return
-    const named = !!row?.title && row.titleSrc === 'qq'
+    const named = !!row?.title && row.titleSrc === conv.slice(0, 2)
     const seen = this.guildFetched.get(conv)
     if (!force && seen) {
       // failed lookups retry soon, an unnamed group every few hours, a known name daily (renames)
@@ -857,11 +744,10 @@ export class OrangeBot {
     }
     this.guildFetched.set(conv, { at: Date.now(), ok: true })
     try {
-      const info = await this.qq.guildName(row?.channelId ?? conv.slice(3))
+      const info = await client.guildName(row?.channelId ?? conv.slice(3))
       if (info?.name) {
-        this.store.setConversationTitle(conv, info.name, 'qq')
+        this.store.setConversationTitle(conv, info.name, conv.slice(0, 2))
         this.broadcast({ type: 'settings' })
-        this.linkByName(conv)
       }
     } catch (error) {
       this.guildFetched.set(conv, { at: Date.now(), ok: false })
@@ -870,118 +756,12 @@ export class OrangeBot {
   }
 
   private async refreshGroupNames(): Promise<void> {
-    const keys = new Set(this.store.conversations().filter((c) => c.platform === 'qq' && !c.direct).map((c) => c.key))
+    const keys = new Set(this.store.conversations().filter((c) => !c.direct && this.client(c.platform) instanceof QQOfficialClient).map((c) => c.key))
     // groups that were configured but never spoke still deserve their real name
-    for (const key of Object.keys(this.store.settings().groups)) if (key.startsWith('qq:')) keys.add(key)
+    for (const key of Object.keys(this.store.settings().groups)) if (this.qqClient(key)) keys.add(key)
     for (const key of keys) await this.refreshGroupName(key)
-    for (const key of keys) this.linkByName(key)
   }
 
-  /**
-   * The group's own name is a second, independent signal: when the official API name
-   * and a userbot title are identical — and unique — the two views are the same group
-   * even if there was too little matching traffic. Only ever used for a side that
-   * message evidence left unpaired, so it cannot break a supported link.
-   */
-  private nameTwin(a: string, b: string): boolean {
-    const qq = a.startsWith('qq:') ? a : b
-    const cg = qq === a ? b : a
-    const name = this.store.conversation(qq)?.title?.trim()
-    if (!name || name.length < 5) return false // short names ("粥吧") are not distinctive enough
-    if (this.store.conversation(cg)?.title?.trim() !== name) return false
-    const matches = this.store.conversations().filter((c) => c.platform === 'cg' && !c.direct && c.title.trim() === name)
-    return matches.length === 1 && matches[0].key === cg
-  }
-
-  private linkByName(qqConv: string): void {
-    if (this.store.group(qqConv).peer) return
-    // the name is unique across userbot groups: find the one that claims it
-    const name = this.store.conversation(qqConv)?.title?.trim()
-    if (!name || name.length < 5) return
-    const cg = this.store.conversations().find((c) => c.platform === 'cg' && !c.direct && c.title.trim() === name)?.key
-    if (!cg || !this.nameTwin(qqConv, cg)) return
-    if (this.store.group(cg).peer === qqConv) return
-    const rival = this.store.group(cg).peer
-    if (rival && this.hits(cg, rival) >= PAIR_CONFIRM) return
-    this.linkPeers(qqConv, cg, this.hits(qqConv, cg))
-    this.log.info(`paired ${qqConv} <-> ${cg} by name "${name}"`)
-  }
-
-  // ---- repair --------------------------------------------------------------
-  /**
-   * Recompute every peer link from stored traffic and throw away what the old
-   * "same text, same moment" heuristic invented: it paired unrelated groups (two
-   * images 3s apart were enough), and each false pair copied the other group's name
-   * and avatar onto the row, so both the panel and the trigger routing were wrong.
-   */
-  async repairPeers(): Promise<void> {
-    const rows = this.store.db.prepare(`SELECT m.conv, m.sender_name, m.ts, m.seq, m.ntext FROM messages m JOIN conversations c ON c.key = m.conv
-      WHERE c.direct = 0 AND m.ntext IS NOT NULL AND LENGTH(m.ntext) >= ? ORDER BY m.ts`).all(PAIR_MIN_CHARS) as any[]
-    const byText = new Map<string, { conv: string, sender: string, ts: number }[]>()
-    for (const r of rows) {
-      let list = byText.get(r.ntext)
-      if (!list) byText.set(r.ntext, list = [])
-      list.push({ conv: r.conv, sender: r.sender_name ?? '', ts: r.ts })
-    }
-    for (const [ntext, list] of byText) {
-      if (list.length > 400) continue // spam repeats carry no pairing information
-      for (let i = 0; i < list.length; i++) {
-        for (let j = i + 1; j < list.length; j++) {
-          const a = list[i]
-          const b = list[j]
-          if (b.ts - a.ts > PAIR_WINDOW_MS) break
-          if (a.conv.slice(0, 2) === b.conv.slice(0, 2)) continue
-          if (!senderMatch(a.sender, b.sender)) continue
-          this.vote(a.conv, b.conv, ntext)
-          this.vote(b.conv, a.conv, ntext)
-        }
-      }
-    }
-    // Official group names and avatars were copied from arbitrary twins by the old
-    // code: forget them *before* auditing links, so a stale borrowed name cannot
-    // pretend to confirm the very pairing it came from. Names fetched from the
-    // adapter ('qq') are kept.
-    for (const c of this.store.conversations()) {
-      if (c.direct) {
-        // DMs: an openid is not a name — drop it, the panel resolves the real one
-        if (c.title === c.channelId || /^[0-9A-F]{32}$/i.test(c.title)) this.store.setConversationTitle(c.key, '', 'dm')
-        continue
-      }
-      if (c.platform !== 'qq') {
-        // userbot groups know their own group number, hence their own avatar
-        if (/^\d+$/.test(c.channelId) && c.avatar !== groupAvatar(c.channelId)) this.store.setConversationAvatar(c.key, groupAvatar(c.channelId))
-        continue
-      }
-      if (c.title && c.titleSrc !== 'qq') this.store.setConversationTitle(c.key, '', '')
-      if (c.avatar) this.store.clearConversationAvatar(c.key)
-    }
-    const before = Object.entries(this.store.settings().groups).filter(([, g]) => g?.peer).length
-    for (const conv of [...this.peerHits.keys()]) this.reconcile(conv)
-    // Audit every link: keep what traffic or an exact group name supports (and make
-    // it symmetric again), drop the rest — they were guesses, not evidence.
-    for (const [conv, settings] of Object.entries(this.store.settings().groups)) {
-      const peer = settings?.peer
-      if (!peer) continue
-      if (this.hits(conv, peer) < PAIR_CONFIRM && !this.nameTwin(conv, peer)) {
-        this.store.clearPeer(conv)
-        this.log.info(`unpaired ${conv}: no evidence it is ${peer}`)
-        continue
-      }
-      if (this.store.group(peer).peer === conv) continue
-      const qq = conv.startsWith('qq:') ? conv : peer
-      const cg = qq === conv ? peer : conv
-      if (qq.startsWith('qq:') && cg.startsWith('cg:') && this.store.group(peer).peer !== conv) {
-        this.store.linkPeers(qq, cg)
-        this.log.info(`repaired one-way link ${qq} <-> ${cg}`)
-      } else {
-        this.store.clearPeer(conv)
-      }
-    }
-    const after = Object.entries(this.store.settings().groups).filter(([, g]) => g?.peer).length
-    this.log.info(`peer repair: ${before} links before, ${after} after`)
-    this.broadcast({ type: 'settings' })
-    await this.refreshGroupNames()
-  }
   /**
    * Replace a merged forward in the stored text with a `<forward id="1" …>` block: the first few
    * messages as a preview, the total count, and how to pull the rest. Both platforms arrive here —
@@ -1021,7 +801,7 @@ export class OrangeBot {
   private async renderForward(ref: { locator?: unknown, snapshot?: BundleItem[] }, path: string, title: string, opts: {
     depth: number, limit: number, hint?: boolean, sink?: MediaSpecSink,
     conv: string, messageId: string, ts: number, senderName: string,
-    /** The top-level bundle of the message: its title and locator identify it in the twin conversation. */
+    /** The top-level bundle of the message: its title and locator identify it when nested bundles are asked for again. */
     root: string,
     rootLocator?: unknown,
   }): Promise<string> {
@@ -1097,7 +877,9 @@ export class OrangeBot {
     const key = JSON.stringify(ref.locator)
     const cached = this.forwardCache.get(key)
     if (cached && Date.now() - cached.at < FORWARD_CACHE_MS) return cached.items
-    const items = (this.cgClient(conv) ?? this.cg).forward(ref.locator) as Promise<BundleItem[]>
+    const client = this.cgClient(conv)
+    if (!client) return []
+    const items = client.forward(ref.locator) as Promise<BundleItem[]>
     this.forwardCache.set(key, { at: Date.now(), items })
     try {
       return await items
@@ -1111,7 +893,7 @@ export class OrangeBot {
    * Every attachment of a bundle *tree*, in the exact order renderForward numbers them
    * (items in order, parts in order, each nested bundle under its own path).
    */
-  private async bundleMedia(ref: { locator?: unknown, snapshot?: BundleItem[] }, base = '1', conv = 'cg:'): Promise<{ path: string, position: number, part: BundleMedia }[]> {
+  private async bundleMedia(ref: { locator?: unknown, snapshot?: BundleItem[] }, base: string, conv: string): Promise<{ path: string, position: number, part: BundleMedia }[]> {
     const walk = async (node: { locator?: unknown, snapshot?: BundleItem[] }, path: string, depth: number): Promise<{ path: string, position: number, part: BundleMedia }[]> => {
       const out: { path: string, position: number, part: BundleMedia }[] = []
       let position = 0
@@ -1210,7 +992,7 @@ export class OrangeBot {
       } else {
         for (const id of ids) this.store.updateGroup(id, { whitelisted: action === 'add', listen: action === 'add' ? true : this.store.group(id).listen })
         await this.react(m, 'ok')
-        if (m.platform === 'qq') await this.sendText(m.conv, `${action === 'add' ? '加上了' : '移掉了'} ${ids.length} 个`, { replyTo: m, trigger: 'admin' })
+        if (this.qqClient(m.conv)) await this.sendText(m.conv, `${action === 'add' ? '加上了' : '移掉了'} ${ids.length} 个`, { replyTo: m, trigger: 'admin' })
       }
       this.broadcast({ type: 'settings' })
       return true
@@ -1262,15 +1044,10 @@ export class OrangeBot {
 
   /** Conversations a `/ai.reset <target>` should clear: an explicit key, a channel id, or a group number. */
   private matchConversations(arg: string): string[] {
-    const all = this.store.conversations()
-    const num = arg.replace(/^(?:qq|cg):/i, '')
+    const prefix = new RegExp(`^(?:${this.clients.map((c) => c.platform).join('|')}):`, 'i')
+    const num = arg.replace(prefix, '')
     const keys = new Set<string>()
-    for (const c of all.filter((c) => c.key === arg || String(c.channelId) === num)) {
-      keys.add(c.key)
-      // the twin side of the same group is the same conversation for the people in it
-      const peer = this.store.group(c.key).peer
-      if (peer) keys.add(peer)
-    }
+    for (const c of this.store.conversations().filter((c) => c.key === arg || String(c.channelId) === num)) keys.add(c.key)
     return [...keys].slice(0, 6)
   }
 
@@ -1370,25 +1147,6 @@ export class OrangeBot {
 
   // ----------------------------------------------------------------- agent --
   /**
-   * A reply to the bot caught on the history-only twin. The owner side gets the
-   * same message stripped of its reply id, so wait for its copy to land (both bots
-   * see one physical group, so the timestamp matches) before waking, and then hand
-   * the trigger over with the twin's message — wake() tolerates the cross-conv
-   * trigger and resolveQuoted() follows the id into the twin's history.
-   */
-  private async forwardReply(owner: string, m: InboundMessage): Promise<void> {
-    // this path bypasses the owner-side trigger decision, so the limit is checked here
-    if (!this.mayTrigger(m)) { this.log.info(`no trigger ${m.conv}: trigger limit ${this.store.group(m.conv).triggerLimit}`); return }
-    const landed = this.store.db.prepare('SELECT 1 FROM messages WHERE conv = ? AND ts = ? LIMIT 1')
-    for (let i = 0; i < 15 && !landed.get(owner, m.ts); i++) await new Promise((resolve) => setTimeout(resolve, 100))
-    const state = this.state(owner)
-    clearTimeout(state.timer)
-    state.timer = undefined
-    this.log.info(`reply to bot forwarded ${m.conv} -> ${owner} (${m.senderName}: ${m.text.slice(0, 60)})`)
-    this.wake(owner, 'reply', m)
-  }
-
-  /**
    * Ask for an agent turn on this conversation.
    *
    * Requests are batched instead of handed over one by one: two @s a few seconds
@@ -1432,43 +1190,11 @@ export class OrangeBot {
 
   private wakeNow(conv: string, trigger: TriggerKind, message?: InboundMessage, reason?: string): void {
     const state = this.state(conv)
-    // One physical message reaches us twice: the owner side sees it directly (usually
-    // because it @s us) and the twin side sees the same message carrying the real reply id
-    // and forwards it (see forwardReply). The two sides can be seconds apart — the runner
-    // logs show both orders — which is outside the merge window, so the agent used to get a
-    // second turn for a message it had already answered (an extra reply, or a no_reply).
-    if (message && this.twinTrigger(state, message)) {
-      this.log.info(`duplicate trigger dropped ${conv}: ${message.senderName}: ${message.text.slice(0, 60)}`)
-      return
-    }
     // claim what this trigger is about to deliver, so the classifier does not judge
     // (and possibly answer) the very same messages again
     state.classifiedSeq = Math.max(state.classifiedSeq, this.store.recent(conv, 1)[0]?.seq ?? 0)
-    if (message) this.claimTrigger(state, message)
     state.pending.push({ trigger, message, reason, ts: Date.now() })
     if (!state.waking) void this.drainWakes(conv).catch((e) => this.reportError(`wake ${conv}`, e))
-  }
-
-  /**
-   * Whether this physical message already woke this conversation from the other side.
-   * Both bots stamp one message with the same second-aligned time, so the same timestamp is
-   * the twin; a platform whose clock drifts a little still counts when the words typed are
-   * identical (their mentions/emoji/media render differently, which utterance() drops).
-   */
-  private twinTrigger(state: ConvState, message: InboundMessage): boolean {
-    const text = utterance(message.text)
-    for (const claim of state.triggered) {
-      if (claim.ts === message.ts && (!text || !claim.text || text === claim.text)) return true
-      if (text && text === claim.text && Math.abs(claim.ts - message.ts) <= TWIN_TRIGGER_MS) return true
-    }
-    return false
-  }
-
-  private claimTrigger(state: ConvState, message: InboundMessage): void {
-    const now = Date.now()
-    // only recent claims matter: a twin copy that lags longer than this is not a duplicate
-    state.triggered = state.triggered.filter((c) => now - c.at < 10 * 60_000).slice(-63)
-    state.triggered.push({ ts: message.ts, text: utterance(message.text), at: now })
   }
 
   /** Merge pending triggers, wait out a running turn, then hand over one event. */
@@ -1527,12 +1253,6 @@ export class OrangeBot {
     }
     if (skipped) lines.push(`（更早的 ${skipped} 条消息没有附上，需要时用 chat_history 翻）`)
     const deltaLines = delta.map((m) => this.formatForAgent(m, triggers))
-    // A trigger forwarded from the paired twin may not have been stored on this
-    // side yet (see forwardReply), so make sure the agent sees what was replied with.
-    for (const m of triggers) {
-      if (m.conv === conv || delta.some((x) => x.ts === m.ts)) continue
-      deltaLines.push(`（同群另一侧）${m.senderName}: ${m.text.replace(/\n/g, '\n  ')} ← 触发`)
-    }
     lines.push('新消息：\n' + (deltaLines.length ? deltaLines.join('\n') : '（无新消息）'))
     // a quoted message may predate our history: fetch it so the agent sees what is referred to
     const inlineQuotes = delta.flatMap((m) => quotedBodies(m.text))
@@ -1542,8 +1262,8 @@ export class OrangeBot {
       const quoted = await this.resolveQuoted(conv, m.replyTo).catch(() => undefined)
       if (!quoted) continue
       // When the platform hands the quote over as data we already print it inline on the
-      // replying message itself (QQ groups — see renderQuote); the twin that forwarded this
-      // trigger only resolved the very same quote by id, so saying it again adds nothing.
+      // replying message itself (QQ groups — see renderQuote); resolving the same quote
+      // by id here would only repeat it, so skip what is already in the text.
       if (sameQuote(inlineQuotes, quoted.text)) continue
       lines.push(`被引用的消息：${quoted.senderName}: ${quoted.text}`)
       quotedMedia.push(...quoted.media)
@@ -1582,64 +1302,9 @@ export class OrangeBot {
     this.broadcast({ type: 'wake', conv, trigger: primary.trigger, sessionId: session.record.sessionId })
   }
 
-  /**
-   * Fill in a reply's missing quote from whichever side of a paired group knows it.
-   *
-   * The official API does not always carry the referenced body of a group reply: QQ then sends the
-   * message as a plain one (`message_type 0`, no `msg_elements`), so the adapter never builds
-   * `message.quote`, the stored text keeps no inline `<quote>` and there is no reply id to resolve
-   * — the agent reads `/ai 这里有几个牙齿` with nothing saying *what* it refers to. Measured in one
-   * group over five hours: 19 of the 22 replies the admin's own account sent arrived like that, and
-   * 4 of the 342 from everyone else. The userbot copy of the very same group always knows the real
-   * reply target, and both sides stamp one message with the same second-aligned time, so the two
-   * rows are matched by the words typed plus that second (`store.twinRow`) and the row that lost the
-   * quote is completed here — stored the way the platform stores its own copies, which is what the
-   * wake reads, what `chat_history` shows and what the panel draws.
-   */
-  private async borrowQuote(conv: string, stored: StoredMessage): Promise<void> {
-    const peer = this.store.group(conv).peer
-    if (!peer) return
-    const twin = this.store.twinRow(peer, stored.text, stored.ts)
-    if (stored.replyTo || quotedBodies(stored.text).length) {
-      // this copy knows what was replied to; the twin's copy of the same message may have lost it
-      if (stored.replyTo && twin && !twin.replyTo && !quotedBodies(twin.text).length) {
-        await this.writeQuote(peer, twin, stored.replyTo)
-      }
-      return
-    }
-    if (twin?.replyTo) await this.writeQuote(conv, stored, twin.replyTo)
-  }
-
-  /**
-   * Store a borrowed quote on `row` in the shape the official side stores its own: an inline
-   * `<quote>昵称：正文</quote>` prefix (see renderQuote in satori.ts), with the quoted message's
-   * attachments registered as this row's `quote` media — that is where the wake's inline pictures
-   * come from (see deliverWake), so a quoted photo is handed to the model like any other.
-   */
-  private async writeQuote(conv: string, row: StoredMessage, replyTo: string): Promise<void> {
-    const quoted = await this.resolveQuoted(conv, replyTo)
-    if (!quoted) return
-    const sink = this.mediaSinkFor({ conv, messageId: row.id, ts: row.ts, senderName: row.senderName })
-    let text = quoted.text
-    for (const media of quoted.media) {
-      const id = sink({ source: 'quote', kind: media.kind, url: media.url, name: media.name, mime: media.mime })
-      // the twin's ids are handles too, but this row should own its quote's attachments
-      if (id !== media.id) text = text.split(`#${media.id}`).join(`#${id}`)
-    }
-    // someone else's words on their way into our own markup: never let them close the tag we wrap
-    // them in, and clip them the way renderQuote does (the full body stays in the history anyway)
-    const inner = `${quoted.senderName ? `${quoted.senderName}：` : ''}${text}`
-      .replace(/<\/?quote>/g, '').replace(/\s+/g, ' ').trim().slice(0, 120)
-    if (!inner) return
-    this.store.setQuote(conv, row.id, `<quote>${inner}</quote> ${row.text}`.trimEnd())
-  }
-
-  /** Quoted message from our history, or (userbot side) fetched live, with its attachments. */
+  /** Quoted message from our history, or (crossgram side) fetched live, with its attachments. */
   async resolveQuoted(conv: string, id: string): Promise<{ senderName: string, text: string, media: MediaRow[] } | undefined> {
-    const peer = this.store.group(conv).peer
-    // a trigger forwarded from the twin (see forwardReply) quotes a twin message id;
-    // crossgram-protocol conversations (cg, bridged platforms) can also ask their own exporter
-    const local = this.store.byId(conv, id) ?? (peer ? this.store.byId(peer, id) : undefined)
+    const local = this.store.byId(conv, id)
     const cgClient = this.cgClient(conv)
     if (cgClient && !local) {
       const live = await cgClient.message(conv.slice(3), id).catch(() => undefined)
@@ -1672,8 +1337,7 @@ export class OrangeBot {
     const user = this.store.user(`${m.conv.slice(0, 2)}:${m.senderId}`)
     const tags = user?.tags.length ? ` {${user.tags.join(',')}}` : ''
     const rank = this.tag(m.conv, m.senderId)
-    // a trigger forwarded from the twin conv carries the twin's message id
-    const hit = triggers.some((t) => t.id === m.id || (t.conv !== m.conv && t.ts === m.ts && t.senderName === m.senderName))
+    const hit = triggers.some((t) => t.id === m.id)
     // koishi's own commands stay in the log the agent reads, but marked: koishi already
     // answered them, so the agent has no reason to (and must not answer twice).
     return `${formatLine(m, rank, this.koishiHandled(m) ? '（koishi 指令，koishi 已回复）' : undefined)}${tags}${hit ? ' ← 触发' : ''}`
@@ -1884,18 +1548,14 @@ export class OrangeBot {
 
   /**
    * The memories one conversation's agent may see: global/project facts, facts filed
-   * under this group or its twin, and facts about people who actually speak here.
+   * under this group, and facts about people who actually speak here.
    * Memory is shared storage, and without this filter a fact learned in group A is
    * recited in group B — the same cross-group leak as reading another chat's history.
    */
   memoryFor(conv: string, query?: string, limit = 30): { id: number, ts: number, scope: string, text: string }[] {
-    const peer = this.store.group(conv).peer
     const senders = new Set<string>()
-    for (const key of [conv, peer]) {
-      if (!key) continue
-      for (const m of this.store.recent(key, 200)) senders.add(`${m.conv.slice(0, 2)}:${m.senderId}`)
-    }
-    const scopes = new Set([`group:${conv}`, peer ? `group:${peer}` : ''])
+    for (const m of this.store.recent(conv, 200)) senders.add(`${m.conv.slice(0, 2)}:${m.senderId}`)
+    const scopes = new Set([`group:${conv}`])
     return this.store.memories(query, 300).filter((m) => {
       const scope = String(m.scope ?? '')
       if (scope === '' || scope === 'global' || scope.startsWith('project:')) return true
@@ -1966,10 +1626,10 @@ export class OrangeBot {
   /**
    * Background tasks whose worker is executing right now — judged by the live agent,
    * not the `tasks.status` column: a worker that ends its turn without `task_update`
-   * leaves its row on "running" forever. `conv` limits it to one group (and its twin).
+   * leaves its row on "running" forever. `conv` limits it to one group.
    */
   runningTasks(conv?: string): { task: any, since: number, exact: boolean, subagents: number }[] {
-    const scope = conv ? new Set([conv, this.store.group(conv).peer].filter(Boolean)) : undefined
+    const scope = conv ? new Set([conv]) : undefined
     const agents = this.ctx.agents.list() as any[]
     const out: { task: any, since: number, exact: boolean, subagents: number }[] = []
     for (const agent of agents) {
@@ -2004,7 +1664,7 @@ export class OrangeBot {
 
   // ----------------------------------------------------------------- style --
   /** Whether this conversation's platform renders markdown (`[文字](url)` links). */
-  rendersMarkdown(conv: string): boolean { return conv.startsWith('qq:') }
+  rendersMarkdown(conv: string): boolean { return !!this.client(conv.slice(0, 2))?.rendersMarkdown }
 
   /**
    * Rewrite one message into the house style just before it goes out: the main
@@ -2104,18 +1764,22 @@ export class OrangeBot {
         const hasSticker = parts.some((p) => p.type === 'sticker')
         if (sentText || hasSticker) this.pendingSelfTexts.push({ conv, text: sentText, sticker: hasSticker, label: hasSticker ? stickerText : undefined, ts: Date.now() })
       }
-      this.cg.sendPrefix = this.store.settings().botEmojiPrefix ? CrossgramClient.PREFIX : ''
+      // Send markers are a global switch over each shared-account platform's own prefix
+      for (const c of this.clients) {
+        if (!(c instanceof CrossgramClient)) continue
+        c.sendPrefix = c.sharedAccount && this.store.settings().botEmojiPrefix ? c.sendPrefixDefault : ''
+      }
       const client = this.client(platform)
       if (!client) throw new Error(`unknown platform "${platform}" (no client registered for ${conv})`)
       const ids = await client.send(channelId, direct, resolved, opts.replyTo ?? state.lastInbound)
       this.store.recordResponse({ ...record, delivered: true })
-      // record our own outgoing message for qq (koishi does not echo it back)
-      if (platform === 'qq') {
+      // record our own outgoing message for koishi-served platforms (koishi does not echo it back)
+      if (client instanceof QQOfficialClient) {
         // one platform message per flushed segment; record the text once and the rest as attachments
         const media = parts.filter((p) => p.type === 'image' || p.type === 'file').map((p) => ({ kind: p.type, url: p.src ?? '', name: p.name }))
         for (const [index, id] of ids.entries()) {
           const segment = index === 0 ? text : media[index - 1] ? (media[index - 1].kind === 'image' ? stickerText ?? '[图片]' : `[文件 ${media[index - 1].name ?? ''}]`) : '[消息]'
-          const stored = this.store.insertMessage({ conv, id, senderId: this.qq.selfId, senderName: '橘波特', ts: Date.now(), text: segment, raw: JSON.stringify({ media: index === 0 ? [] : media.slice(index - 1, index) }), self: true, mentionsSelf: false, fromBot: true })
+          const stored = this.store.insertMessage({ conv, id, senderId: client.selfId, senderName: '橘波特', ts: Date.now(), text: segment, raw: JSON.stringify({ media: index === 0 ? [] : media.slice(index - 1, index) }), self: true, mentionsSelf: false, fromBot: true })
           if (stored) this.broadcast({ type: 'message', message: stored })
         }
       }
@@ -2189,33 +1853,19 @@ export class OrangeBot {
     this.log.info(`auto sticker ${conv}: 发 #${row.id}（${row.desc || '无描述'}）${result.dryRun ? '，dry-run 只记录' : ''}`)
   }
 
-  /** "Received / ok" acknowledgements: reactions exist on the userbot and bridged-bot sides (per-platform emoji keys). */
+  /**
+   * "Received / ok" acknowledgements. Only crossgram-protocol platforms can react
+   * at all; each one carries its own kind→emoji-key map (the QQ table by default,
+   * a bridged platform's own keys when its entry configures them).
+   */
   async react(m: { conv: string, id: string } | InboundMessage, kind: 'ok' | 'bot' | 'thumb' | string): Promise<boolean> {
-    const keys: Record<string, string> = { ok: '1:124', bot: '2:129302', thumb: '1:76', received: '1:428' }
-    const key = keys[kind] ?? kind
-    const conv = m.conv
-    if (this.store.group(conv).dryRun) { this.store.recordResponse({ ts: Date.now(), conv, trigger: 'react', text: `[react ${kind}]`, dryRun: true, delivered: false }); return true }
-    if (conv.startsWith('cg:')) {
-      await this.cg.react(conv.slice(3), m.id, [key])
-      this.store.recordResponse({ ts: Date.now(), conv, trigger: 'react', text: `[react ${kind}]`, dryRun: false, delivered: true })
-      return true
-    }
-    // bridged bot platforms (e.g. Lark) speak their own emoji keys, not QQ's `1:124`
-    const client = this.cgClient(conv)
-    if (client && conv.startsWith('lk:')) {
-      const larkKeys: Record<string, string> = { ok: 'OK', received: 'DONE', thumb: 'THUMBSUP', bot: 'APPLAUSE' }
-      await client.react(conv.slice(3), m.id, [larkKeys[kind] ?? String(kind).toUpperCase()])
-      this.store.recordResponse({ ts: Date.now(), conv, trigger: 'react', text: `[react ${kind}]`, dryRun: false, delivered: true })
-      return true
-    }
-    // qq official cannot react in groups; find the same message on the userbot side if the group is mapped
-    const peer = this.store.group(conv).peer
-    if (peer) {
-      const original = this.store.byId(conv, m.id)
-      const twin = original && this.store.findSimilar(peer, original.text, original.ts)
-      if (twin) { await this.cg.react(peer.slice(3), twin.id, [key]); return true }
-    }
-    return false
+    const client = this.cgClient(m.conv)
+    if (!client) return false
+    const key = client.emojiKeys[kind] ?? kind
+    if (this.store.group(m.conv).dryRun) { this.store.recordResponse({ ts: Date.now(), conv: m.conv, trigger: 'react', text: `[react ${kind}]`, dryRun: true, delivered: false }); return true }
+    await client.react(m.conv.slice(3), m.id, [key])
+    this.store.recordResponse({ ts: Date.now(), conv: m.conv, trigger: 'react', text: `[react ${kind}]`, dryRun: false, delivered: true })
+    return true
   }
 
   /** How long a message we sent may still be withdrawn (both platforms allow ~2 min). */
@@ -2239,14 +1889,14 @@ export class OrangeBot {
     const conv = m.conv
     if (this.store.group(conv).dryRun) return { ok: false, note: `${conv} 是 dry-run 会话，这条消息本来就没有真的发出去` }
     const channelId = this.store.conversation(conv)?.channelId ?? conv.slice(3)
+    const qq = this.qqClient(conv)
+    const cg = this.cgClient(conv)
+    if (!qq && !cg) return { ok: false, note: `${conv} 的平台不支持撤回` }
     try {
-      if (conv.startsWith('qq:')) {
-        const r = await this.qq.ext<{ recalled: string[], failed?: { id: string, error: string }[] }>('recall', { selfId: this.qq.selfId, channelId, messageIds: [m.id] })
-        if (r?.failed?.length) return { ok: false, note: `平台拒绝了撤回：${r.failed[0].error}` }
-      } else {
-        const r = await this.cg.recall(channelId, [m.id])
-        if (r?.failed?.length) return { ok: false, note: `平台拒绝了撤回：${r.failed[0].error}` }
-      }
+      const r = qq
+        ? await qq.ext<{ recalled: string[], failed?: { id: string, error: string }[] }>('recall', { selfId: qq.selfId, channelId, messageIds: [m.id] })
+        : await cg!.recall(channelId, [m.id])
+      if (r?.failed?.length) return { ok: false, note: `平台拒绝了撤回：${r.failed[0].error}` }
     } catch (error) {
       return { ok: false, note: `撤回失败：${(error as Error).message}` }
     }
@@ -2288,9 +1938,8 @@ export class OrangeBot {
    * documented `msg_elements` recursion only exists for 引用消息), and each attachment's url in
    * that rendering is minted either for the bot or for the sender's own client. A bot-minted one
    * (the common case: query appid and the appid inside the fileid agree) downloads fine; a
-   * client-minted one answers `{"retcode":-5503023,"retmsg":"appid is not match"}` for every appid
-   * we can send, so the twin conversation's copy of the same message is the only source. Which of
-   * the two it is cannot be read off the url, so both are tried in turn.
+   * client-minted one answers `{"retcode":-5503023,"retmsg":"appid is not match"}` and there is
+   * no other source — which of the two it is cannot be read off the url, so it is tried as-is.
    */
   async mediaUrl(row: MediaRow): Promise<{ url: string } | { error: string }> {
     const plan = parsePlan(row.plan)
@@ -2307,23 +1956,9 @@ export class OrangeBot {
       }
     }
     const giveUp = () => ({ error: `这个附件取不到（${failed.join('；') || '没有可用的地址'}）` })
-    if (!plan) return (await attempt('附件自己的地址', row.url)) ?? giveUp()
-    if (plan.kind === 'locator') {
-      const url = await this.bundleMediaUrl({ locator: plan.locator }, plan.path, plan.position, plan.name, row.conv).catch(() => undefined)
-      return (await attempt('转发里的地址', url)) ?? giveUp()
-    }
-    // The official side: the url the platform printed for the attachment is tried first (it is
-    // the bot's own in the common case and needs no userbot at all), and only if it cannot be
-    // fetched is the twin conversation's copy of the same message asked for.
-    const direct = await attempt('官方侧给的地址', row.url)
-    if (direct) return direct
-    const twin = await this.twinForward(row.conv, plan).catch(() => undefined)
-    if (!twin) {
-      failed.push('userbot 侧也没有找到同一份记录（对方可能撤回了，或者这两个群还没配对）')
-      return giveUp()
-    }
-    const url = await this.bundleMediaUrl({ locator: twin.locator }, twin.path, twin.position, plan.name, this.store.group(row.conv).peer ?? row.conv).catch(() => undefined)
-    return (await attempt('userbot 侧同一份', url)) ?? giveUp()
+    if (!plan || plan.kind === 'dump') return (await attempt('官方侧给的地址', row.url)) ?? giveUp()
+    const url = await this.bundleMediaUrl({ locator: plan.locator }, plan.path, plan.position, plan.name, row.conv).catch(() => undefined)
+    return (await attempt('转发里的地址', url)) ?? giveUp()
   }
 
   /** Downloading one url, cached on disk by its address (without the rkey that rotates). */
@@ -2332,40 +1967,13 @@ export class OrangeBot {
   }
 
   /** The url of one attachment of a bundle: picked by position, checked by name when we have one. */
-  private async bundleMediaUrl(ref: { locator?: unknown, snapshot?: BundleItem[] }, path: string, position: number, name?: string, conv = 'cg:'): Promise<string | undefined> {
+  private async bundleMediaUrl(ref: { locator?: unknown, snapshot?: BundleItem[] }, path: string, position: number, name: string | undefined, conv: string): Promise<string | undefined> {
     const all = await this.bundleMedia(ref, '1', conv)
     const at = all.filter((m) => m.path === path)
     const picked = (name ? at.find((m) => sameMedia(m.part.name, name)) : undefined)
       ?? at.find((m) => m.position === position)
       ?? (name ? all.find((m) => sameMedia(m.part.name, name)) : undefined)
     return picked?.part.url
-  }
-
-  /**
-   * The same bundle as it exists on the other platform. The official side never gives the bot a
-   * merged forward as data, only that rendered text, so its attachments are reached through the
-   * userbot's copy of the very same message: paired conversation, same sender, same moment, same
-   * bundle title.
-   */
-  private async twinForward(conv: string, plan: ForwardPlan): Promise<{ locator: unknown, path: string, position: number } | undefined> {
-    const peer = this.store.group(conv).peer
-    if (!peer) return undefined
-    const near = this.store.search({
-      conv: peer, sender: plan.senderName || undefined,
-      since: plan.ts - TWIN_FORWARD_MS, until: plan.ts + TWIN_FORWARD_MS, limit: 20,
-    })
-    for (const candidate of near) {
-      const forwards = (JSON.parse(candidate.raw || '{}').forwards ?? []) as { title?: string, locator?: unknown }[]
-      for (const [index, fwd] of forwards.entries()) {
-        if (fwd.locator === undefined) continue
-        if (plan.forward && fwd.title && String(fwd.title) !== plan.forward) continue
-        const all = await this.bundleMedia({ locator: fwd.locator }, String(index + 1), peer).catch(() => [])
-        const picked = (plan.name ? all.find((m) => sameMedia(m.part.name, plan.name)) : undefined)
-          ?? all.find((m) => m.path === plan.path && m.position === plan.position)
-        if (picked) return { locator: fwd.locator, path: picked.path, position: picked.position }
-      }
-    }
-    return undefined
   }
 
   /**
@@ -2439,19 +2047,23 @@ export function formatLine(m: StoredMessage, tag?: string, note?: string): strin
 /** Cache key for one person's role in one conversation. */
 function roleKey(conv: string, userId: string): string { return `${conv} ${userId}` }
 
+/** Public QQ group avatar URL — the group number is the whole secret. */
+function groupAvatar(groupNumber: string): string {
+  return `https://p.qlogo.cn/gh/${groupNumber}/${groupNumber}/640/`
+}
+
 function normalize(text: string): string { return text.replace(/^🤖\s*/, '').replace(/\s+/g, '') }
 
 /**
  * The bodies of the inline `<quote>…</quote>` prefixes a stored text carries: the official
- * QQ groups deliver the referenced message that way (see renderQuote in satori.ts), while
- * pairText() strips those blocks before any cross-platform comparison.
+ * QQ groups deliver the referenced message that way (see renderQuote in satori.ts).
  */
 export function quotedBodies(text: string): string[] {
   return [...String(text ?? '').matchAll(/<quote>([\s\S]*?)<\/quote>/g)].map((m) => normalize(m[1]))
 }
 
 /**
- * Whether one of those inline bodies is the quote a twin trigger resolved by id. The two
+ * Whether one of those inline bodies is the quote a resolved id names. The two
  * renderings are not necessarily identical — one may carry the quoted sender's name, and
  * either side may be truncated — so only a common, long-enough head of the body counts.
  */
@@ -2466,15 +2078,6 @@ export function sameQuote(inline: string[], body: string): boolean {
   })
 }
 
-/**
- * The words a person actually typed, without the parts each platform renders its own way:
- * pairText() already drops quotes, mentions, media placeholders and punctuation, and the
- * emoji/face icons (one side sends 🙂 where the other shows [捂脸]) go too. Used to tell a
- * twin copy of a message from a genuinely different one.
- */
-function utterance(text: string): string {
-  return pairText(text).replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, '')
-}
 
 function delay(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)) }
 

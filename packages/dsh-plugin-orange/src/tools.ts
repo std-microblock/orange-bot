@@ -52,21 +52,17 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
   const fullAccess = (own: { sessionId: string, role: 'chat' | 'task', admin: boolean }): boolean =>
     own.role === 'task' ? own.admin : triggerAdmin(own.sessionId)
 
-  /** Conversations this session may read: the one it serves plus its twin, or all of them for the admin. */
+  /** Conversations this session may read: the one it serves, or all of them for the admin. */
   const scopeConvs = (own: { sessionId: string, role: 'chat' | 'task', conv: string, admin: boolean }): Set<string> => {
     if (fullAccess(own)) return new Set(bot().store.conversations().map((c) => c.key))
     const set = new Set<string>()
-    if (own.conv) {
-      set.add(own.conv)
-      const peer = bot().store.group(own.conv).peer
-      if (peer) set.add(peer)
-    }
+    if (own.conv) set.add(own.conv)
     return set
   }
 
   const assertConv = (own: { sessionId: string, role: 'chat' | 'task', conv: string, admin: boolean }, conv: string): void => {
     if (scopeConvs(own).has(conv)) return
-    throw new Error(`conversation ${conv} is out of this session's scope. It only serves ${own.conv}${bot().store.group(own.conv).peer ? ` / ${bot().store.group(own.conv).peer}` : ''}; reading or writing another chat needs a request from the admin.`)
+    throw new Error(`conversation ${conv} is out of this session's scope. It only serves ${own.conv}; reading or writing another chat needs a request from the admin.`)
   }
 
   const resolveConv = (exec: any, conv?: string): string => {
@@ -94,7 +90,7 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
         type: 'array', description: 'Button rows (official bot only). Each button: {label, kind: link|input, data}. link opens a URL; input fills the input box with data.',
         items: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { label: { type: 'string', required: true }, kind: { type: 'string', enum: ['link', 'input'], required: true }, data: { type: 'string', required: true } } } },
       },
-      conv: { type: 'string', description: 'Target conversation key (qq:<id> / cg:<id>); omit for the current one.' },
+      conv: { type: 'string', description: 'Target conversation key (<platform>:<id>); omit for the current one.' },
     },
     output: TEXT_OUT,
     async execute(args: any, exec: any) {
@@ -139,7 +135,7 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
       const parts: OutboundPart[] = []
       if (quotedHere && !quotedLine) parts.push({ type: 'quote', messageId: quotedHere.id })
       // Which shape an @ takes is the platform's business, not the body's — see mentionBody.
-      for (const part of mentionBody(seq, { platform: b.platformOf(conv), markdown: render, quoteLine: quotedLine || undefined })) {
+      for (const part of mentionBody(seq, { atViaMarkup: !!b.qqClient(conv), markdown: render, quoteLine: quotedLine || undefined })) {
         parts.push(part as OutboundPart)
       }
       for (const src of args.images ?? []) parts.push({ type: 'image', src: String(src) })
@@ -177,7 +173,7 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
 
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'react',
-    description: 'Put a reaction on a message instead of replying, e.g. to acknowledge ("ok"/"received"/"thumb"/"bot"). Works on the userbot and bridged-bot (e.g. Lark) sides; on official-bot-only groups it may be unavailable.',
+    description: 'Put a reaction on a message instead of replying, e.g. to acknowledge ("ok"/"received"/"thumb"/"bot"). Works on crossgram-protocol platforms (userbot, bridged bots); koishi-served groups cannot react.',
     parameters: {
       seq: { type: 'integer', required: true, description: 'Message #seq.' },
       kind: { type: 'string', enum: ['ok', 'received', 'thumb', 'bot'], required: true },

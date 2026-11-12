@@ -11,37 +11,49 @@ export interface SatoriEndpoint {
   token: string
 }
 
-/** One connected platform: a conversation-key prefix and the client that serves it. */
+/**
+ * One connected platform: a conversation-key prefix and the client that serves
+ * it. Every platform — including the classic qq/cg pair — comes in through
+ * this list; nothing is built in.
+ */
 export interface PlatformEntry {
   /**
-   * Conversation-key prefix and panel id, e.g. `qq`, `cg`, `tg`. Exactly two
+   * Conversation-key prefix and panel id, e.g. `qq`, `cg`, `lk`. Exactly two
    * chars (a-z0-9): conversation keys are parsed by prefix length everywhere
-   * (`conv.slice(0, 2)` / `conv.slice(3)`), and `qq`/`cg` are taken.
+   * (`conv.slice(0, 2)` / `conv.slice(3)`), and each key must be unique in the list.
    */
   key: string
-  /** `crossgram` (orange-message exporter protocol) | `satori` (standard protocol) — which client to build. */
-  kind: 'crossgram' | 'satori'
+  /** `koishi` (official bot) | `crossgram` (orange-message exporter protocol) | `satori` (standard protocol) — which client to build. */
+  kind: 'koishi' | 'crossgram' | 'satori'
   endpoint: string
   token: string
   /** Wire `body.platform` this adapter declares; empty = accept any. */
   protocolPlatform?: string
+  /** Whether the account is a human's own account shared with the bot (the userbot) — echo/prefix semantics. */
+  sharedAccount?: boolean
+  /** reaction kind → this platform's emoji key; missing kinds pass through as-is. Defaults to the QQ table for `crossgram` platforms. */
+  emojiKeys?: Record<string, string>
+  /** Marker prepended to sends on shared-account platforms, to tell bot from human. */
+  sendPrefix?: string
+  /** Panel display name; empty = derived from kind (官方 bot / userbot / key). */
+  label?: string
 }
+
+/** Default reaction keys for crossgram-exporter platforms whose upstream is QQ. */
+export const QQ_EMOJI_KEYS: Record<string, string> = { ok: '1:124', bot: '2:129302', thumb: '1:76', received: '1:428' }
 
 export interface Config {
   dataDir: string
   workspace: string
-  koishi: SatoriEndpoint
-  crossgram: SatoriEndpoint
   /**
-   * Extra Satori endpoints beyond the two built-ins. `kind` picks the client:
-   * `crossgram` = a platform bridged through crossgram's imPlatform layer (its
-   * orange-ext exporter speaks the same orange-message protocol as the cg
-   * userbot — e.g. a Lark bot; set `protocolPlatform` to the wire platform the
-   * exporter registers it under); `satori` = the standard-protocol client for any
-   * plain Satori adapter. Empty/absent = the classic koishi + crossgram pair, so
-   * existing deployments change nothing until they opt in.
+   * Every connected platform. `kind` picks the client: `koishi` = the official
+   * QQ bot through koishi, `crossgram` = a platform bridged through crossgram's
+   * imPlatform layer (its orange-ext exporter speaks the orange-message
+   * protocol — e.g. the userbot or a Lark bot; set `protocolPlatform` to the
+   * wire platform the exporter registers it under); `satori` = the
+   * standard-protocol client for any plain Satori adapter.
    */
-  platforms?: PlatformEntry[]
+  platforms: PlatformEntry[]
   /** classifierModel overrides llm.model for the wake classifier and the inbound screen only. */
   llm: { baseURL: string, apiKey: string, model: string, classifierModel?: string, provider: string, agentModel: string }
   /**
@@ -63,8 +75,6 @@ export interface Config {
 export const Config: z<Config> = z.object({
   dataDir: z.string().required(),
   workspace: z.string().required(),
-  koishi: z.object({ endpoint: z.string().required(), token: z.string().required() }),
-  crossgram: z.object({ endpoint: z.string().required(), token: z.string().required() }),
   platforms: z.array(z.object({
     key: z.string().required(),
     kind: z.string().required(),
@@ -72,6 +82,10 @@ export const Config: z<Config> = z.object({
     token: z.string().required(),
     /** Wire `body.platform` this adapter declares; empty = accept any. */
     protocolPlatform: z.string().default(''),
+    sharedAccount: z.boolean().default(false),
+    emojiKeys: z.dict(z.string()),
+    sendPrefix: z.string(),
+    label: z.string(),
   })).default([]),
   llm: z.object({
     baseURL: z.string().required(),
@@ -105,8 +119,6 @@ export interface GroupSettings {
   tags: string[]
   /** Human notes for the classifier/agent about this group. */
   note: string
-  /** Peer conversation on the other platform (same physical group), for history merge. */
-  peer?: string
   /** Dedicated workspace dir for this group's sessions; empty = the global config workspace. */
   workspace?: string
 }

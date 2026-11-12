@@ -29,12 +29,13 @@ export function OrangePage({ openSession }: { openSession: (id: string) => void 
   const [route, go] = useRoute()
   const [overview, setOverview] = useState<any>()
   const [status, setStatus] = useState<Record<string, string>>({})
+  const [labels, setLabels] = useState<Record<string, string>>({})
   const [tick, setTick] = useState(0)
   const [stickerTick, setStickerTick] = useState(0)
   const [stickerJob, setStickerJob] = useState<unknown>()
   const [toast, setToast] = useState('')
   const [zoom, setZoom] = useState<string>()
-  const reload = useCallback(() => { void api('/overview').then((o) => { setOverview(o); setStatus(o.status) }).catch(() => {}) }, [])
+  const reload = useCallback(() => { void api('/overview').then((o) => { setOverview(o); setStatus(o.status); setLabels(o.labels ?? {}) }).catch(() => {}) }, [])
   useEffect(reload, [reload])
   useEvents((e) => {
     if (e.type === 'status') setStatus(e.status)
@@ -50,7 +51,7 @@ export function OrangePage({ openSession }: { openSession: (id: string) => void 
   })
   const convs: Conv[] = overview?.conversations ?? []
   const byKey = useMemo(() => new Map(convs.map((c) => [c.key, c])), [convs])
-  const ctx: Ctx = { go, route, byKey, convs, tick, stickerTick, stickerJob, reload, openSession, toast: setToast, zoom: setZoom }
+  const ctx: Ctx = { go, route, byKey, convs, labels, tick, stickerTick, stickerJob, reload, openSession, toast: setToast, zoom: setZoom }
   const Body = { chats: Chats, responses: Responses, tasks: Tasks, stickers: Stickers, memory: Memory, stats: Stats, workspaces: Workspaces, settings: GlobalSettings }[route.tab] ?? Chats
   return (
     <PanelCtx.Provider value={ctx}>
@@ -64,7 +65,7 @@ export function OrangePage({ openSession }: { openSession: (id: string) => void 
           ))}
           <div className={css.status}>
             {Object.keys(status).map((k) => (
-              <div key={k} className={css.statusRow}><span className={`${css.dot} ${status[k] === 'ready' ? css.dotOk : css.dotBad}`} />{k === 'qq' ? '官方 bot' : k === 'cg' ? 'userbot' : k}<span className={css.statusText}>{status[k] === 'ready' ? '在线' : status[k] ?? '…'}</span></div>
+              <div key={k} className={css.statusRow}><span className={`${css.dot} ${status[k] === 'ready' ? css.dotOk : css.dotBad}`} />{labels[k] ?? k}<span className={css.statusText}>{status[k] === 'ready' ? '在线' : status[k] ?? '…'}</span></div>
             ))}
           </div>
         </nav>

@@ -6,12 +6,16 @@
       config:
         dataDir: !!js "process.env.ORANGE_DATA ?? (process.env.HOME + '/.orange')"
         workspace: !!js "process.env.ORANGE_WORKSPACE ?? (process.env.HOME + '/workspace')"
-        koishi:
-          endpoint: !!js "process.env.ORANGE_KOISHI_ENDPOINT"
-          token: !!js "process.env.ORANGE_KOISHI_TOKEN"
-        crossgram:
-          endpoint: !!js "process.env.ORANGE_CROSSGRAM_ENDPOINT"
-          token: !!js "process.env.ORANGE_CROSSGRAM_TOKEN"
+        platforms:
+          - key: qq
+            kind: koishi
+            endpoint: !!js "process.env.ORANGE_KOISHI_ENDPOINT"
+            token: !!js "process.env.ORANGE_KOISHI_TOKEN"
+          - key: cg
+            kind: crossgram
+            sharedAccount: true
+            endpoint: !!js "process.env.ORANGE_CROSSGRAM_ENDPOINT"
+            token: !!js "process.env.ORANGE_CROSSGRAM_TOKEN"
         llm:
           baseURL: !!js "process.env.ORANGE_LLM_BASE_URL"
           apiKey: !!js "process.env.ORANGE_LLM_API_KEY"
