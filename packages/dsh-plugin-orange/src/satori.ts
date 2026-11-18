@@ -431,7 +431,7 @@ export class QQOfficialClient extends SatoriClient {
     // sentence twice. See markdownDropsQuote in qq.ts for the measurements.
     // An @ element has to be folded into the body as QQ's own markup, because the
     // adapter's group encoder drops the element (see foldMentions in qq.ts).
-    const outgoing = markdownDropsQuote(foldMentions(parts))
+    const outgoing = markdownDropsQuote(foldMentions(qqImageCaption(parts)))
     const content = outgoing.map((part) => {
       switch (part.type) {
         case 'text': return h.escape(part.text ?? '')
@@ -737,4 +737,22 @@ export function stripMarkdown(md: string): string {
     .replace(/!\[[^\]]*\]\(([^)]+)\)/g, '$1')
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, url) => label === url ? url : `${label} ${url}`)
     .replace(/^#{1,6}\s+/gm, '')
+}
+
+/**
+ * The QQ encoder flushes before an image, but keeps an image followed by plain
+ * text in one media message (msg_type 7, content + media). Markdown instead
+ * selects msg_type 2, so captions deliberately use the plain-text rendition.
+ * Only normalize a single image with body text: mentions/buttons need markdown,
+ * and arbitrary media sequences must keep their existing ordering/semantics.
+ */
+export function qqImageCaption(parts: OutboundPart[]): OutboundPart[] {
+  const images = parts.filter(p => p.type === 'image')
+  if (images.length !== 1 || !images[0].src ||
+      parts.some(p => !['text', 'markdown', 'image', 'quote'].includes(p.type)) ||
+      parts.some(p => /<qqbot-at-user\b|<@!?[^>]+>/.test(p.text ?? ''))) return parts
+  const body = parts.filter(p => p.type === 'text' || p.type === 'markdown')
+    .map(p => p.type === 'markdown' ? { ...p, type: 'text' as const, text: stripMarkdown(p.text ?? '') } : p)
+  if (!body.some(p => p.text?.trim())) return parts
+  return [...parts.filter(p => p.type === 'quote'), images[0], ...body]
 }
