@@ -121,6 +121,12 @@ export interface GroupSettings {
    * the classifier (listen) is the bot's own choice and is never limited.
    */
   triggerLimit?: 'all' | 'groupAdmin' | 'botAdmin'
+  /**
+   * Process every message: skip the classifier, and any group message that
+   * passes triggerLimit wakes the agent with a fixed trigger. Off (default)
+   * = only @ / /ai / reply / classifier as usual.
+   */
+  triggerAll?: boolean
   /** Free-form domain tags shown to the classifier, e.g. 蔚蓝, 开发. */
   tags: string[]
   /** Human notes for the classifier/agent about this group. */

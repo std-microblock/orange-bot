@@ -24,7 +24,7 @@ import { MessageSegments, StickerService, segmentWantsSticker } from './stickers
 import type { MessageSegment } from './stickers.ts'
 import { createLog, type Log } from './log.ts'
 
-export type TriggerKind = 'mention' | 'command' | 'reply' | 'direct' | 'classifier' | 'task' | 'admin'
+export type TriggerKind = 'mention' | 'command' | 'reply' | 'direct' | 'classifier' | 'task' | 'admin' | 'all'
 
 /**
  * Who somebody is, as far as the bot can tell: the bot's own administrator list
@@ -697,6 +697,9 @@ export class OrangeBot {
       trigger = 'mention'
     } else if (repliedToBot && settings.whitelisted && mayTrigger && !m.self) {
       trigger = 'reply'
+    } else if (settings.triggerAll && settings.whitelisted && mayTrigger && !m.self) {
+      // 处理所有消息：跳过分类器，符合触发限制即固定触发
+      trigger = 'all'
     }
     if (trigger) {
       clearTimeout(state.timer)

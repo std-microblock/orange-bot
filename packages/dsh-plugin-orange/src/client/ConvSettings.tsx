@@ -29,6 +29,7 @@ export function ConvSettings({ conv, session }: { conv: Conv, session: string | 
             <option value="botAdmin">仅机器人管理员/开发者</option>
           </select>
         </Field>
+        <Field label="处理所有消息" hint="跳过分类器：符合触发限制的每条群消息都固定触发"><Switch label="处理所有消息" checked={!!g.triggerAll} onChange={(v) => save({ triggerAll: v })} /></Field>
         <Field label="旁听" hint="分类器判断相关时主动参与"><Switch label="旁听" checked={g.listen} onChange={(v) => save({ listen: v })} /></Field>
         <Field label="Dry run" hint="照常思考，但不真正发出"><Switch label="Dry run" checked={g.dryRun} onChange={(v) => save({ dryRun: v })} /></Field>
       </section>
