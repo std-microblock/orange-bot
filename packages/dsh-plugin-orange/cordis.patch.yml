@@ -7,10 +7,6 @@
         dataDir: !!js "process.env.ORANGE_DATA ?? (process.env.HOME + '/.orange')"
         workspace: !!js "process.env.ORANGE_WORKSPACE ?? (process.env.HOME + '/workspace')"
         platforms:
-          - key: qq
-            kind: koishi
-            endpoint: !!js "process.env.ORANGE_KOISHI_ENDPOINT"
-            token: !!js "process.env.ORANGE_KOISHI_TOKEN"
           - key: cg
             kind: crossgram
             sharedAccount: true
