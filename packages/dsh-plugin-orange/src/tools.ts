@@ -506,13 +506,13 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
       title: { type: 'string', required: true, description: 'Short title.' },
       kind: { type: 'string', enum: ['bugfix', 'feature', 'research', 'other'], required: true },
       repo: { type: 'string', description: 'owner/name if it concerns a repository.' },
-      tier: { type: 'string', enum: ['fast', 'quality'], required: true, description: 'Worker model tier: quality for writing/fixing code and PRs (correctness matters), fast for research/lookup/quick answers (speed matters). Always pick one — the panel maps tiers to concrete models.' },
+      tier: { type: 'string', enum: ['fast', 'quality', 'vision'], required: true, description: 'Worker model tier: quality for writing/fixing code and PRs (correctness matters), fast for research/lookup/quick answers (speed matters), vision for tasks that need to look at images (screenshots, photos, renders). Always pick one — the panel maps tiers to concrete models.' },
       brief: { type: 'string', required: true, description: 'Everything the worker needs: the report, versions, logs (#seq refs), what the user expects, and what to deliver.' },
     },
     output: TEXT_OUT,
     async execute(args: any, exec: any) {
       const own = roleOf(exec)
-      const tier = args.tier === 'fast' || args.tier === 'quality' ? args.tier : undefined
+      const tier = args.tier === 'fast' || args.tier === 'quality' || args.tier === 'vision' ? args.tier : undefined
       const id = await bot().startTask(own.conv, String(args.title), String(args.kind), String(args.brief), args.repo, fullAccess(own), tier)
       return `task #${id} started`
     },

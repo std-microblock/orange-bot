@@ -263,10 +263,10 @@ export interface RuntimeSettings {
   wakeMergeMs: number
   /**
    * Model tiers the main agent may pick for a background worker (`start_task`
-   * tier): fast = 调研/快速响应, quality = 写代码/修 bug. Empty = the configured
-   * agentModel, which is also what the default tier always uses.
+   * tier): fast = 调研/快速响应, quality = 写代码/修 bug, vision = 任务需要识图.
+   * Empty = the configured agentModel, which is also what the default tier always uses.
    */
-  taskModels: { fast: string, quality: string }
+  taskModels: { fast: string, quality: string, vision: string }
   /**
    * Model for the wake classifier and the inbound screen. Empty = the static
    * llm.classifierModel from the cordis patch (then llm.model).
@@ -368,7 +368,7 @@ export const DEFAULT_SETTINGS: RuntimeSettings = {
   botEmojiPrefix: false,
   sessionIdleMs: 2 * 3600_000,
   wakeMergeMs: 2000,
-  taskModels: { fast: '', quality: '' },
+  taskModels: { fast: '', quality: '', vision: '' },
   classifierModel: '',
   agentModel: '',
   personaExtra: '',

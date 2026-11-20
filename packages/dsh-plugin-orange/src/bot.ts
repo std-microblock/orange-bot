@@ -1582,9 +1582,9 @@ export class OrangeBot {
   }
 
   /** Background worker session for a task; returns the task id. */
-  async startTask(conv: string, title: string, kind: string, brief: string, repo?: string, admin = false, tier?: 'fast' | 'quality'): Promise<number> {
+  async startTask(conv: string, title: string, kind: string, brief: string, repo?: string, admin = false, tier?: 'fast' | 'quality' | 'vision'): Promise<number> {
     const models = this.store.settings().taskModels
-    const model = tier === 'fast' ? models?.fast ?? '' : tier === 'quality' ? models?.quality ?? '' : ''
+    const model = tier ? models?.[tier] ?? '' : ''
     const sessionId = `orange-task-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`
     const id = this.store.createTask({ conv, title, kind, sessionId, repo, model: model || undefined })
     const agent = await this.createAgent(sessionId, 'task', `🛠 #${id} ${title}`, conv, admin, model || undefined)
