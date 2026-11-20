@@ -5,8 +5,8 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { readFile, writeFile, mkdir, stat } from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
+import { readFile, writeFile, mkdir, stat, symlink } from 'node:fs/promises'
+import { existsSync, readFileSync } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { dirname, extname, isAbsolute, join } from 'node:path'
 import type { Config, GroupSettings, OwnProject } from './config.ts'
@@ -1379,6 +1379,14 @@ export class OrangeBot {
     try {
       // the registry only owns existing directories — make sure the resolved one is there
       await mkdir(wsPath, { recursive: true })
+      // per-group workspaces start empty: inherit the global workspace's instruction
+      // files (TOOLS.md/AGENTS.md) by symlink so agent-instructions finds them from cwd
+      if (wsPath !== this.config.workspace) {
+        for (const f of ['TOOLS.md', 'AGENTS.md']) {
+          const dst = join(wsPath, f)
+          if (!existsSync(dst) && existsSync(join(this.config.workspace, f))) await symlink(join(this.config.workspace, f), dst).catch(() => {})
+        }
+      }
       workspace = await ctx.workspaceRegistry.create(wsPath)
     } catch (e) {
       this.log.warn(`workspace ${wsPath} unusable (${(e as Error).message}), falling back to ${this.config.workspace}`)
