@@ -58,6 +58,14 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
     return set
   }
 
+  /** Tasks this session may touch: its own worker task, others in the same workspace, or (admin) all. */
+  const assertTask = (own: { sessionId: string, role: 'chat' | 'task', conv: string, admin: boolean }, task: any): void => {
+    if (!task) return
+    if (fullAccess(own) || task.session_id === own.sessionId) return
+    if (own.conv && bot().workspaceOf(task.conv) === bot().workspaceOf(own.conv)) return
+    throw new Error(`task #${task.id} belongs to another workspace. Only the admin may work across workspaces.`)
+  }
+
   const assertConv = (own: { sessionId: string, role: 'chat' | 'task', conv: string, admin: boolean }, conv: string): void => {
     if (scopeConvs(own).has(conv)) return
     throw new Error(`conversation ${conv} is out of this session's scope. It only serves ${own.conv}; reading or writing another chat needs a request from the admin.`)
@@ -515,12 +523,15 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
     description: 'List background tasks (id, status, repo, issue/PR links), optionally filtered by keyword. Status shown is corrected against the live worker agent: a task claiming "running" shows idle (worker alive but not working) or dead (no worker at all — crashed or lost to a restart; task_message can revive it) when nobody is actually executing it.',
     parameters: { query: { type: 'string' } },
     output: TEXT_OUT,
-    async execute(args: any) {
+    async execute(args: any, exec: any) {
       const b = bot()
+      const own = roleOf(exec)
+      // workspace isolation: non-admin sessions only see tasks from their own workspace
+      const ws = fullAccess(own) || !own.conv ? '' : b.workspaceOf(own.conv)
       // the tasks.status column only changes when the worker itself calls task_update;
       // a crashed or silent worker leaves "running" forever, so judge by the live agent
       const agent = new Map((b.ctx.agents.list() as any[]).map((a) => [String(a.session.id), a]))
-      const rows = b.store.tasks(30, args.query).map((t: any) => {
+      const rows = b.store.tasks(30, args.query).filter((t: any) => !ws || b.workspaceOf(t.conv) === ws).map((t: any) => {
         if (t.status !== 'running') return t
         const a = agent.get(String(t.session_id))
         return { ...t, status: a?.status === 'running' ? 'running' : a ? 'idle' : 'dead' }
@@ -534,7 +545,8 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
     description: 'Send instructions or new information to an existing background task (e.g. requested PR changes); it resumes the original worker session.',
     parameters: { id: { type: 'integer', required: true }, text: { type: 'string', required: true } },
     output: TEXT_OUT,
-    async execute(args: any) {
+    async execute(args: any, exec: any) {
+      assertTask(roleOf(exec), bot().store.task(Number(args.id)))
       return (await bot().messageTask(Number(args.id), String(args.text))) ? 'delivered' : 'task not found'
     },
   })))
@@ -552,6 +564,7 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
       const own = roleOf(exec)
       const task = args.id ? bot().store.task(Number(args.id)) : bot().store.taskBySession(own.sessionId)
       if (!task) throw new Error('no task')
+      assertTask(own, task)
       const patch: any = {}
       for (const k of ['status', 'issue', 'pr', 'note']) if (args[k] !== undefined) patch[k] = String(args[k])
       bot().store.updateTask(task.id, patch)
