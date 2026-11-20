@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { dirname, extname, isAbsolute, join } from 'node:path'
 import type { Config, GroupSettings, OwnProject } from './config.ts'
-import { QQ_EMOJI_KEYS } from './config.ts'
+import { DEFAULT_MAX_CHARS, QQ_EMOJI_KEYS } from './config.ts'
 import { Store, type MediaRow, type StoredMessage } from './store.ts'
 import { CrossgramClient, QQOfficialClient, StandardSatoriClient, SatoriClient, memberRole, stripMarkdown, type InboundMessage, type MediaEntry, type MediaRef, type MediaSpec, type MediaSpecSink, type MemberRole, type OutboundPart, type PlatformKey } from './satori.ts'
 import { bundlePreview, forwardPlaceholder, mediaTag, parseForwardDump, type BundleForward, type BundleItem, type BundleMedia } from './media.ts'
@@ -1665,6 +1665,9 @@ export class OrangeBot {
   // ----------------------------------------------------------------- style --
   /** Whether this conversation's platform renders markdown (`[文字](url)` links). */
   rendersMarkdown(conv: string): boolean { return !!this.client(conv.slice(0, 2))?.rendersMarkdown }
+
+  /** Max chars of one chat message on this conversation's platform (anti-flood); 0/absent = default. */
+  maxChars(conv: string): number { return this.config.platforms.find((e) => e.key === conv.slice(0, 2))?.maxChars || DEFAULT_MAX_CHARS }
 
   /**
    * Rewrite one message into the house style just before it goes out: the main

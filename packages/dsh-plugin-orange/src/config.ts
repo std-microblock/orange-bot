@@ -37,7 +37,12 @@ export interface PlatformEntry {
   sendPrefix?: string
   /** Panel display name; empty = derived from kind (官方 bot / userbot / key). */
   label?: string
+  /** Max chars of one chat message on this platform (anti-flood); absent = DEFAULT_MAX_CHARS. */
+  maxChars?: number
 }
+
+/** Per-message char cap for platforms whose entry doesn't set maxChars. */
+export const DEFAULT_MAX_CHARS = 120
 
 /** Default reaction keys for crossgram-exporter platforms whose upstream is QQ. */
 export const QQ_EMOJI_KEYS: Record<string, string> = { ok: '1:124', bot: '2:129302', thumb: '1:76', received: '1:428' }
@@ -86,6 +91,7 @@ export const Config: z<Config> = z.object({
     emojiKeys: z.dict(z.string()),
     sendPrefix: z.string(),
     label: z.string(),
+    maxChars: z.number(),
   })).default([]),
   llm: z.object({
     baseURL: z.string().required(),

@@ -7,6 +7,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { OrangeBot } from './bot.ts'
+import { DEFAULT_MAX_CHARS as MAX_CHARS } from './config.ts'
 import { formatLine, projectTerms } from './bot.ts'
 import type { MediaRef, OutboundPart } from './satori.ts'
 import { markdownDropsQuote, quoteBlockquote } from './qq.ts'
@@ -14,9 +15,6 @@ import { mentionBody, readableMentions, resolveMention, splitMentions, type Ment
 
 const text = (value: string) => [{ type: 'text' as const, text: value }]
 const TEXT_OUT = { schema: { type: 'string' as const }, render: (_a: unknown, v: string) => text(v) }
-
-/** Max characters of one chat message (QQ group chat, anti-flood). */
-const MAX_CHARS = 120
 
 export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined): void {
   const bot = (): OrangeBot => {
@@ -78,7 +76,7 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
 
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'say',
-    description: `Send a chat message to the conversation (default: the one this session serves). This is the ONLY way your words reach people. Keep it short and chatty (≤${MAX_CHARS} chars, usually ONE short sentence; never paste file paths, log names or internals to non-developers); split rarely. Links: just write [text](url) — markdown is allowed everywhere, the platform decides what renders and platforms without it get plain text ("text url"), so you never have to think about it. The text is rewritten into the current speaking style before it goes out, and that final wording is what the result reports — write the content plainly, don't add flavor words yourself. To @ somebody write \`@名字\` (or the 8-character id in brackets on a message line) right in the text; an @ nobody recognizes stays literal text and the result tells you. Replying with quote ALSO @s the person you reply to, so never @ them by hand on a reply. buttons add tappable buttons (official bot only). Use quote to reply to a specific message (#seq). For long content send an image/file instead. Before sending, check yourself: a reply that is ONLY an acknowledgement ("收到"/"好的"/"我看看") is a react, not a say — call react (plus start_task when there is work) and skip say entirely; never send it first and recall it after.`,
+    description: `Send a chat message to the conversation (default: the one this session serves). This is the ONLY way your words reach people. Keep it short and chatty (usually ONE short sentence; the char cap is per-platform, ${MAX_CHARS} by default; never paste file paths, log names or internals to non-developers); split rarely. Links: just write [text](url) — markdown is allowed everywhere, the platform decides what renders and platforms without it get plain text ("text url"), so you never have to think about it. The text is rewritten into the current speaking style before it goes out, and that final wording is what the result reports — write the content plainly, don't add flavor words yourself. To @ somebody write \`@名字\` (or the 8-character id in brackets on a message line) right in the text; an @ nobody recognizes stays literal text and the result tells you. Replying with quote ALSO @s the person you reply to, so never @ them by hand on a reply. buttons add tappable buttons (official bot only). Use quote to reply to a specific message (#seq). For long content send an image/file instead. Before sending, check yourself: a reply that is ONLY an acknowledgement ("收到"/"好的"/"我看看") is a react, not a say — call react (plus start_task when there is work) and skip say entirely; never send it first and recall it after.`,
     parameters: {
       text: { type: 'string', description: 'Message text (plain chat style). @某人 by writing @名字 or @id in here.' },
       markdown: { type: 'boolean', description: 'Override whether this conversation renders markdown. Leave it unset: the platform decides (official bot renders [text](url), the userbot gets plain text automatically).' },
@@ -97,14 +95,15 @@ export function registerTools(ctx: Context, getBot: () => OrangeBot | undefined)
       const b = bot()
       const conv = resolveConv(exec, args.conv)
       const body = String(args.text ?? '').trim()
-      if (body.replace(/\]\([^)]*\)/g, ']').length > MAX_CHARS) throw new Error(`message too long (${body.length} chars > ${MAX_CHARS}). This is a group chat: say ONE short thing (the key point or one question), drop explanations/paths/version history. If the person really needs details, render an image/file.`)
+      const maxChars = b.maxChars(conv)
+      if (body.replace(/\]\([^)]*\)/g, ']').length > maxChars) throw new Error(`message too long (${body.length} chars > ${maxChars}). This is a group chat: say ONE short thing (the key point or one question), drop explanations/paths/version history. If the person really needs details, render an image/file.`)
       // Style step: the agent writes plain text, the rewrite adds whatever the
       // current style draws for this send (see OrangeBot.stylize). Whether the
       // platform renders markdown is decided here, not by the agent.
       const render = typeof args.markdown === 'boolean' ? args.markdown : b.rendersMarkdown(conv)
-      const styled = body ? await b.stylize(conv, body, MAX_CHARS, render) : { text: '', applied: false, subs: [] as string[], note: '' }
+      const styled = body ? await b.stylize(conv, body, maxChars, render) : { text: '', applied: false, subs: [] as string[], note: '' }
       const out = styled.text
-      if (out.replace(/\]\([^)]*\)/g, ']').length > MAX_CHARS) throw new Error(`the styled wording came out over ${MAX_CHARS} chars (${out.length}). Say the same thing shorter.`)
+      if (out.replace(/\]\([^)]*\)/g, ']').length > maxChars) throw new Error(`the styled wording came out over ${maxChars} chars (${out.length}). Say the same thing shorter.`)
       // A quote cannot ride along with a markdown body on the official bot (QQ
       // then draws the body twice — see qq.ts), so there the quoted line is
       // written into the body as a markdown blockquote; plain text and the
