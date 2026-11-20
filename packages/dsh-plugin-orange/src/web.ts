@@ -166,8 +166,11 @@ export function registerWebApi(ctx: any, getBot: () => OrangeBot | undefined): v
       }
       if (req.method === 'GET' && path === '/tasks') {
         const rows = bot.store.db.prepare('SELECT * FROM tasks ORDER BY id DESC LIMIT 200').all() as any[]
-        for (const t of rows) t.conv_title = bot.store.convTitle(t.conv)
-        return json(res, 200, rows)
+        // workspace isolation: a task belongs to the workspace its conv runs in
+        const ws = q.get('workspace')
+        const visible = ws ? rows.filter((t) => bot.workspaceOf(t.conv) === ws) : rows
+        for (const t of visible) t.conv_title = bot.store.convTitle(t.conv)
+        return json(res, 200, visible)
       }
       if (req.method === 'GET' && path === '/memory') return json(res, 200, { memory: bot.store.memories(undefined, 300), users: bot.store.users(), events: bot.store.events(100) })
       if (req.method === 'POST' && path === '/group') {

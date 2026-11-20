@@ -25,12 +25,19 @@ function Follow({ id }: { id: number }) {
 export function Tasks() {
   const { tick } = usePanel()
   const [rows, setRows] = useState<any[]>([])
-  useEffect(() => { void api('/tasks').then(setRows).catch(() => {}) }, [tick])
+  const [wss, setWss] = useState<any[]>([])
+  const [ws, setWs] = useState('')
+  useEffect(() => { void api('/workspaces').then((r) => setWss(r.items)).catch(() => {}) }, [])
+  useEffect(() => { void api(`/tasks${ws ? `?workspace=${encodeURIComponent(ws)}` : ''}`).then(setRows).catch(() => {}) }, [tick, ws])
   return (
     <>
       <Header title="后台任务" sub="调研 / 修 bug / 开 PR，每个任务一个独立 agent session" />
       <div className={css.page}>
         <div className={`${css.feed} ${css.narrow}`}>
+          <select className={css.textarea} style={{ width: 220, marginBottom: 8 }} value={ws} onChange={(e) => setWs(e.target.value)}>
+            <option value="">全部工作区</option>
+            {wss.map((w) => <option key={w.path} value={w.path}>{w.path}{w.default ? '（默认）' : ''}</option>)}
+          </select>
           {rows.map((t) => (
             <div key={t.id} className={css.card}>
               <div className={css.top}>
