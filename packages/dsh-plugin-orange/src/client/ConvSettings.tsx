@@ -32,6 +32,7 @@ export function ConvSettings({ conv, session }: { conv: Conv, session: string | 
         <Field label="处理所有消息" hint="跳过分类器：符合触发限制的每条群消息都固定触发"><Switch label="处理所有消息" checked={!!g.triggerAll} onChange={(v) => save({ triggerAll: v })} /></Field>
         <Field label="旁听" hint="分类器判断相关时主动参与"><Switch label="旁听" checked={g.listen} onChange={(v) => save({ listen: v })} /></Field>
         <Field label="Dry run" hint="照常思考，但不真正发出"><Switch label="Dry run" checked={g.dryRun} onChange={(v) => save({ dryRun: v })} /></Field>
+        <Field label="关闭润色" hint="本群不做出站前的风格重写，agent 写什么就发什么"><Switch label="关闭润色" checked={!!g.noStyle} onChange={(v) => save({ noStyle: v })} /></Field>
       </section>
       <section className={css.section}>
         <h4>群画像</h4>

@@ -133,6 +133,8 @@ export interface GroupSettings {
   note: string
   /** Dedicated workspace dir for this group's sessions; empty = the global config workspace. */
   workspace?: string
+  /** Send-time style polish is off in this group: agent text goes out verbatim. */
+  noStyle?: boolean
 }
 
 /**
