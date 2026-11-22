@@ -11,7 +11,7 @@
 import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
-import type { AssistTopic, OwnProject } from './config.ts'
+import type { AssistTopic, ChatProfile, OwnProject } from './config.ts'
 import type { OrangeStore } from './store.ts'
 
 export interface V1Export {
@@ -23,6 +23,7 @@ export interface V1Export {
     persona?: { chat?: string; task?: string }
     projects?: OwnProject[]
     assistTopics?: AssistTopic[]
+    chats?: Record<string, ChatProfile>
   }
 }
 
@@ -58,6 +59,7 @@ export async function importV1(dir: string, store: OrangeStore, stickers: Sticke
       ...data.settings.projects ? { projects: data.settings.projects } : {},
       ...data.settings.assistTopics ? { assistTopics: data.settings.assistTopics } : {},
       ...data.settings.persona ? { persona: data.settings.persona } : {},
+      ...data.settings.chats ? { chats: data.settings.chats } : {},
     })
   }
   if ((data.stickers ?? []).length > 0) {
