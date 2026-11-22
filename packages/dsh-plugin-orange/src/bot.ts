@@ -1697,7 +1697,7 @@ export class OrangeBot {
     const raw = String(text ?? '').trim()
     const body = markdown ? raw : stripMarkdown(raw)
     if (!body || !style?.enabled) return { text: body, applied: false, subs: [], note: '' }
-    if (this.group(conv).noStyle) return { text: body, applied: false, subs: [], note: '本群已关闭润色' }
+    if (this.store.group(conv).noStyle) return { text: body, applied: false, subs: [], note: '本群已关闭润色' }
     const subs = pickSubStyles(style.subs ?? [], style.pickMin, style.pickMax)
     const model = String(style.model ?? '').trim() || this.config.llm.model
     const cfg = { baseURL: this.config.llm.baseURL, apiKey: this.config.llm.apiKey, model }
