@@ -1,0 +1,11 @@
+{
+  "//": "The browser half (src/client), bundled by ../../scripts/build-client.mjs; type-checked only.",
+  "extends": ["../../tsconfig.base.json", "../../tsconfig.harness.json"],
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": [],
+    "jsx": "react-jsx",
+    "noEmit": true
+  },
+  "include": ["src/client/**/*.ts", "src/client/**/*.tsx"]
+}
