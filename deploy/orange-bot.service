@@ -1,0 +1,26 @@
+[Unit]
+Description=橘波特 (DeepSeek Harness IM bot, profile orange)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=orange
+Group=orange
+# The harness fork checkout (built: `pnpm install && pnpm build`, plus apps/web for the panel).
+WorkingDirectory=/opt/orange/dsh
+Environment=DSH_HOME=/home/orange/.dsh
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/etc/orange/orange.env
+Environment="NODE_OPTIONS=--max-old-space-size=3072"
+ExecStart=/usr/bin/node --import tsx/esm apps/cli/src/bin.ts --profile orange
+Restart=always
+RestartSec=5
+TimeoutStopSec=45
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=orange-bot
+
+[Install]
+WantedBy=multi-user.target

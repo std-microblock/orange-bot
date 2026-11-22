@@ -1,0 +1,22 @@
+{
+  "name": "dsh-profile-orange",
+  "private": true,
+  "description": "橘波特's DSH profile: dsh-im with the official QQ adapter, the dsh-im-extras plugins (dispatch, session tasks, polish, stickers, panel) and the orange plugins. Rendered by deploy/render-profile.mjs, which replaces the @@…@@ paths.",
+  "dependencies": {
+    "dsh-im-session-tasks": "file:@@EXTRAS@@/packages/im-session-tasks",
+    "dsh-im-dispatch": "file:@@EXTRAS@@/packages/im-dispatch",
+    "dsh-im-polish": "file:@@EXTRAS@@/packages/im-polish",
+    "dsh-im-stickers": "file:@@EXTRAS@@/packages/im-stickers",
+    "dsh-im-panel": "file:@@EXTRAS@@/packages/im-panel",
+    "dsh-plugin-orange": "file:@@ORANGE@@/packages/dsh-plugin-orange",
+    "dsh-plugin-orange-voice": "file:@@ORANGE@@/packages/dsh-plugin-orange-voice"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app"
+      ]
+    }
+  }
+}

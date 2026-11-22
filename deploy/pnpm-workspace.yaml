@@ -1,0 +1,9 @@
+# The profile installs its plugins into one hoisted node_modules, the layout the
+# plugins are developed against. The harness packages are peers resolved from
+# the harness itself, never installed from a registry.
+packages:
+  - .
+nodeLinker: hoisted
+autoInstallPeers: false
+allowBuilds:
+  esbuild: true

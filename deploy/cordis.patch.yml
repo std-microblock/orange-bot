@@ -1,0 +1,324 @@
+# 橘波特的 DSH profile 层（模板）。
+#
+# `deploy/render-profile.mjs` 把它和 package.json 一起渲染进 $DSH_HOME/profiles/<name>/：
+# 只替换 package.json 里的插件路径，这里的东西全部从环境变量读（systemd 的
+# EnvironmentFile，模板见 deploy/orange.env.example）。仓库是公开的：这里不写任何群号、
+# openid、AppID、key 或内网地址。
+#
+# 组成：dsh-im + 官方 QQ 适配器（可选 Lark）→ dsh-im-dispatch（每个会话一个路由 session +
+# 后台任务 worker）+ dsh-im-session-tasks → dsh-im-polish（橘波特的说话风格）、
+# dsh-im-stickers（表情库）、dsh-im-panel（面板）→ dsh-plugin-orange（人设/记忆/项目/守卫/
+# 用量）+ dsh-plugin-orange-voice（小爱音箱，默认关）。
+
+# ---- 部署人设与权限 -------------------------------------------------------------------------
+- id: system-prompt
+  name: '@deepseek-ai/dsh-system-prompt'
+  config:
+    personaPrefix: |
+      你是橘波特（Orange），运行在一台专用 Linux 虚拟机里，通过 IM 和人打交道。具体的人设、说话方式和规矩见下面「橘波特」相关的章节。
+
+# 后台任务没人能回答权限确认，所以和 toc 一样：完全权限、不弹审批。
+- id: sandbox-policy
+  config:
+    mode: danger-full-access
+- id: approval
+  config:
+    policy: never
+
+# 宿主面的工具行：路由 session 由 dispatch 的 tools.main 白名单收窄，worker 全都能用。
+- id: tool-bash
+  disabled: false
+- id: tool-jobs
+  disabled: false
+- id: tool-fs
+  disabled: false
+- id: tool-fs-search
+  disabled: false
+- id: skill-filesystem
+  disabled: false
+- id: tool-skill
+  disabled: false
+- id: compaction-basic
+  disabled: false
+- id: command-compact
+  disabled: false
+- id: tool-result-pruner
+  disabled: false
+- id: tool-subagent-control
+  disabled: false
+- id: tool-subagent
+  disabled: false
+- id: agent-instructions
+  disabled: false
+- id: tool-todo
+  disabled: false
+- id: tool-web
+  disabled: false
+
+# 面板所在的 Web GUI：只在本机回环上，经 SSH 隧道或反代访问。
+- id: web-runtime
+  config:
+    openBrowser: false
+    printUrl: true
+    surfaceContext: false
+
+- insert:
+    - id: logger-console
+      name: '@deepseek-ai/cordis-plugin-logger-console'
+      config:
+        colors: false
+        levels:
+          default: 2
+
+    # ---- IM 传输 -------------------------------------------------------------------------------
+    - id: im-http
+      name: '@deepseek-ai/cordis-plugin-http'
+      isolate:
+        http: im
+      config:
+        timeout: 120000
+    - id: im-core
+      name: '@deepseek-ai/cordis-plugin-im-core'
+      isolate:
+        http: im
+    - id: im-markdown
+      name: '@deepseek-ai/cordis-plugin-im-markdown'
+
+    # QQ 官方机器人（群 + C2C）。群里默认只收 @ 机器人的消息；被动回复 5 分钟 5 条；
+    # markdown/按钮需要平台单独开权限。AppID / AppSecret 只走环境变量。
+    - id: im-qq
+      name: '@deepseek-ai/cordis-plugin-im-adapter-qq'
+      inject:
+        - im
+      isolate:
+        http: im
+      config:
+        appId: !!js process.env.ORANGE_QQ_APP_ID
+        secret: !!js process.env.ORANGE_QQ_APP_SECRET
+        sandbox: !!js process.env.ORANGE_QQ_SANDBOX === '1'
+
+    # 可选：飞书/Lark。要用就把 disabled 去掉，再在 sources 里加一条 lark 来源。
+    - id: im-lark
+      name: '@deepseek-ai/cordis-plugin-im-adapter-lark'
+      disabled: true
+      inject:
+        - im
+      isolate:
+        http: im
+      config:
+        appId: !!js process.env.ORANGE_LARK_APP_ID
+        appSecret: !!js process.env.ORANGE_LARK_APP_SECRET
+        cardStreaming: true
+        callbacks: true
+
+    # 入站准入：ORANGE_QQ_CHATS 是逗号分隔的平台会话 id（`group:<group_openid>`、主人私聊
+    # `user:<user_openid>`）。留空 = 机器人所在的任何群、任何人的私聊都收——上线前填上。
+    - id: im
+      name: '@deepseek-ai/dsh-im'
+      isolate:
+        http: im
+      config:
+        sources:
+          - id: qq
+            bot: !!js '`qq:${process.env.ORANGE_QQ_APP_ID}`'
+            writable: true
+            store: all
+            chats: !!js (process.env.ORANGE_QQ_CHATS ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+
+    # /stop /clear /new /status /help：在 im/message 链最前面，命令不会变成模型输入。
+    - id: im-session-commands
+      name: '@deepseek-ai/dsh-im-session-commands'
+      config:
+        resettable:
+          - dispatch
+          - orange-voice
+
+    # ---- 会话：每个会话一个路由 + 后台任务 --------------------------------------------------------
+    - id: orange-router-preset
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: orange-router
+        plugins: []
+    - id: orange-worker-preset
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: orange-worker
+        plugins:
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
+    - id: orange-voice-preset
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: orange-voice
+        plugins: []
+
+    # `dispatch`（路由）和 `orange-voice`（音箱会话）可以开任务。
+    - id: im-session-tasks
+      name: dsh-im-session-tasks
+      config:
+        owners: [dispatch, orange-voice]
+
+    # 群聊：wakeMode 默认 mention（@、回复机器人、私聊才唤醒路由），replyMode 默认
+    # mention_only；私聊本来就算"被叫到"（direct）。每个群可以在面板「会话」页或让路由
+    # configure_chat 改成 watch/auto。QQ 没有话题线程，autoThread 在 qq 上自动不生效。
+    # 路由只留白名单里的工具：dispatch 的路由工具 + IM 只读工具 + 橘波特的记忆/标签/项目 + 表情。
+    - id: im-dispatch
+      name: dsh-im-dispatch
+      config:
+        main:
+          agentPreset: orange-router
+          provider: !!js process.env.ORANGE_PROVIDER ?? 'deepseek-official'
+          model: !!js process.env.ORANGE_ROUTER_MODEL ?? 'deepseek-flash'
+          cwd: !!js process.env.ORANGE_WORKSPACE ?? (process.env.HOME + '/workspace')
+        worker:
+          agentPreset: orange-worker
+          provider: !!js process.env.ORANGE_PROVIDER ?? 'deepseek-official'
+          model: !!js process.env.ORANGE_WORKER_MODEL ?? 'deepseek-flash'
+          cwd: !!js process.env.ORANGE_WORKSPACE ?? (process.env.HOME + '/workspace')
+        # 任务的回答由 worker 自己用 im_reply 发（QQ 的被动回复额度很小，不适合流式卡片）。
+        workerOutput: none
+        tools:
+          main:
+            - router_reply
+            - create_task
+            - route_messages_to_task
+            - steer_task
+            - list_tasks
+            - configure_chat
+            - query_chronicle
+            - list_route_rules
+            - remove_route_rule
+            - im_search
+            - im_read
+            - im_history
+            - im_members
+            - im_read_image
+            - memory
+            - user_tag
+            - project_repos
+            - send_sticker
+            - sticker_search
+
+    # ---- 说话风格（橘波特的 v1 风格）-----------------------------------------------------------
+    - id: im-polish
+      name: dsh-im-polish
+      config:
+        style:
+          main: IM 交流风：每句话尽可能简短，可以用空格代替逗号、句号等，避免使用冗余专有名词，可以用「」作为引用，避免使用「不是…而是…」这类句式
+          subs:
+            - 如有需要，可以用「瓦/呀/哇/哈？」等来软化语气
+            - 如有需要，可以用「~」来表示拖长
+            - 如有需要，可以在句尾用「——」来表示拖长
+            - 如有需要，可以用（）来更贴近网络用语
+            - 如有需要，可以用颜文字（不是 emoji）来更贴近网络用语
+            - 如有需要，可以用「咕…/唔…」等来软化语气
+            - 如有需要，可以省掉主语、只留关键词（「版本？」「截图看看」）
+            - 如有需要，可以用「欸/哦哦/嗯」这类短促的词开头
+            - 如有需要，可以把一句话拆成两口气，中间用空格断开
+            - 如有需要，可以用反问代替陈述（「不是这样？」「真的假的」）
+            - 如有需要，可以写得随手一点，比如把「在吗」写成「在嘛」这种同音字
+            - 如有需要，可以用「emmm/呃/啊这」表示犹豫或者接不上话
+            - 如有需要，可以用「好家伙/笑死」这类口头感叹，但只在这句话本来就是那个语气时用
+            - 如有需要，可以在句尾留一个很短的自我修正（「…算了」「当我没说」），同样只在这句话本来就是那个语气时用
+          pickMin: 1
+          pickMax: 3
+        model:
+          provider: !!js process.env.ORANGE_PROVIDER ?? 'deepseek-official'
+          model: !!js process.env.ORANGE_FAST_MODEL ?? 'deepseek-flash'
+          temperature: 1
+
+    # ---- 表情库（v1 的类型表，迁移脚本导出的 tag 原样可用）-------------------------------------
+    - id: im-stickers
+      name: dsh-im-stickers
+      config:
+        types:
+          - { id: general, name: 通用, desc: 没啥特定意义，随时发都是对的 }
+          - { id: speechless, name: 无语, desc: 表示无语、恼火等不满 }
+          - { id: wow, name: 惊了, desc: 表示惊讶、兴奋 }
+          - { id: confused, name: 疑惑, desc: 表示疑惑、不解 }
+          - { id: pitiful, name: 可怜, desc: 表示难过、不安、卖可怜、不好意思 }
+          - { id: humble, name: 卖菜, desc: 表示对自己的不自信（很多也是「可怜」） }
+          - { id: close, name: 亲昵, desc: 表示和对方的亲昵 }
+          - { id: other, name: 其它, desc: 其它类型 }
+        auto:
+          percent: 15
+          gapMs: 7000
+          tag: general
+        classify:
+          provider: !!js process.env.ORANGE_PROVIDER ?? 'deepseek-official'
+          model: !!js process.env.ORANGE_VISION_MODEL ?? ''
+
+    - id: im-panel
+      name: dsh-im-panel
+
+    # ---- 橘波特本体 ---------------------------------------------------------------------------
+    # 管理员（主人）只认这里的 id：QQ 上同一个人在群里（member_openid）和私聊（user_openid）
+    # 是两个 id，都写进 ORANGE_ADMINS（逗号分隔）。项目、人设、按会话设置都可以在面板「橘波特」
+    # 页签里改；这里给的是种子。
+    - id: orange
+      name: dsh-plugin-orange
+      config:
+        admins: !!js (process.env.ORANGE_ADMINS ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+        owner:
+          name: !!js process.env.ORANGE_OWNER_NAME ?? '主人'
+          github: !!js process.env.ORANGE_OWNER_GITHUB || undefined
+        workspace: !!js process.env.ORANGE_WORKSPACE ?? (process.env.HOME + '/workspace')
+        taskModels:
+          fast: { provider: !!js process.env.ORANGE_PROVIDER ?? 'deepseek-official', model: !!js process.env.ORANGE_FAST_MODEL ?? 'deepseek-flash' }
+          quality: { provider: !!js process.env.ORANGE_PROVIDER ?? 'deepseek-official', model: !!js process.env.ORANGE_QUALITY_MODEL ?? 'deepseek-pro' }
+        projects:
+          - name: CeleMod
+            aliases: [celemod, cm, 蔚蓝mod管理器]
+            repo: std-microblock/CeleMod
+            note: Celeste mod manager (Tauri + Rust + Preact)
+          - name: crossgram
+            aliases: [crossgram]
+            repo: std-microblock/crossgram
+            note: MTProto relay bridging QQ etc. to Telegram clients (cordis monorepo)
+            org: crossgram-project
+            subs:
+              - { name: crossgram-desktop, repo: crossgram-project/crossgram-desktop, note: desktop client }
+              - { name: crossgram-android, repo: crossgram-project/crossgram-android, note: Android client }
+              - { name: crossgram-tdlib, repo: crossgram-project/crossgram-tdlib, note: semantic TDLib patcher + multi-platform builds }
+              - { name: crossgram-telegram-x, repo: crossgram-project/crossgram-telegram-x, note: server-switch patcher for Telegram X }
+              - { name: crossgram-unigram, repo: crossgram-project/crossgram-unigram, note: server-switch integration for Unigram }
+              - { name: crossgram-mithka, repo: crossgram-project/crossgram-mithka, note: server switching + direct downloads for Mithka }
+              - { name: website, repo: crossgram-project/website, note: 'product site, deploy handbook, client downloads (Astro)' }
+          - name: EverestUltra
+            aliases: [EverestUltra, eveu, eu]
+            repo: std-microblock/EverestUltra
+            note: Faster-loading Everest fork; the short names eveu/eu only mean this in Celeste-related contexts
+          - name: breeze-shell
+            aliases: [breeze, breeze-shell, breeze shell]
+            repo: std-microblock/breeze-shell
+            note: Windows context menu replacement
+        assistTopics:
+          - { name: Everest, aliases: [everest, 蔚蓝mod加载器], note: Celeste mod loader (EverestAPI/Everest) }
+          - { name: Celeste mods, aliases: [蔚蓝mod, celeste mod, 地图], note: any Celeste mod / map / crash log }
+        # scripts/migrate-from-v1.mjs 的输出目录；导一次后自动跳过。
+        importV1: !!js process.env.ORANGE_IMPORT_V1 || undefined
+
+    # ---- 小爱音箱（默认关）-----------------------------------------------------------------------
+    # DeepSeek ASR/TTS 的 base URL 与 key 都可配置：VM 上不放真 key，指向宿主机的 relay。
+    - id: orange-voice
+      name: dsh-plugin-orange-voice
+      config:
+        enabled: !!js process.env.ORANGE_VOICE_ENABLED === '1'
+        host: !!js process.env.ORANGE_VOICE_HOST ?? '0.0.0.0'
+        port: !!js Number(process.env.ORANGE_VOICE_PORT ?? 4399)
+        allowFrom: !!js (process.env.ORANGE_VOICE_ALLOW_FROM ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+        advertise: !!js process.env.ORANGE_VOICE_ADVERTISE ?? ''
+        session:
+          chat: !!js 'process.env.ORANGE_OWNER_DM ? `qq:${process.env.ORANGE_QQ_APP_ID}|${process.env.ORANGE_OWNER_DM}` : undefined'
+          composition:
+            agentPreset: orange-voice
+            provider: !!js process.env.ORANGE_PROVIDER ?? 'deepseek-official'
+            model: !!js process.env.ORANGE_VOICE_MODEL ?? process.env.ORANGE_ROUTER_MODEL ?? 'deepseek-flash'
+            cwd: !!js process.env.ORANGE_WORKSPACE ?? (process.env.HOME + '/workspace')
+            # 语音会话只聊天、记事、开任务、发私聊；动手的活交给后台任务。
+            restrict:
+              allow: [speak, speaker_status, speaker_recover, memory, user_tag, project_repos, task_start, task_list, task_message, im_send, im_read, im_history, web_search, web_fetch]
+        deepseek:
+          baseUrl: !!js process.env.DEEPSEEK_TOOLS_BASE_URL ?? 'https://api.deepseek.com'
+          apiKey: !!js process.env.DEEPSEEK_API_KEY ?? ''
+          voice: !!js process.env.ORANGE_VOICE_ID ?? 'stella'
