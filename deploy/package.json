@@ -8,6 +8,7 @@
     "dsh-im-polish": "file:@@EXTRAS@@/packages/im-polish",
     "dsh-im-stickers": "file:@@EXTRAS@@/packages/im-stickers",
     "dsh-im-panel": "file:@@EXTRAS@@/packages/im-panel",
+    "dsh-im-qq-panel": "file:@@EXTRAS@@/packages/im-qq-panel",
     "dsh-plugin-orange": "file:@@ORANGE@@/packages/dsh-plugin-orange",
     "dsh-plugin-orange-voice": "file:@@ORANGE@@/packages/dsh-plugin-orange-voice"
   },

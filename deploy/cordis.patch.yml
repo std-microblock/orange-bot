@@ -96,6 +96,10 @@
         appId: !!js process.env.ORANGE_QQ_APP_ID
         secret: !!js process.env.ORANGE_QQ_APP_SECRET
         sandbox: !!js process.env.ORANGE_QQ_SANDBOX === '1'
+        # markdown 消息与自定义键盘要平台单独开权限；没开时打开它们会让发送失败。
+        # dsh-im-qq-panel 的授权按钮（link）两个都要开。
+        markdown: !!js process.env.ORANGE_QQ_MARKDOWN === '1'
+        keyboard: !!js process.env.ORANGE_QQ_KEYBOARD === '1'
 
     # 可选：飞书/Lark。要用就把 disabled 去掉，再在 sources 里加一条 lark 来源。
     - id: im-lark
@@ -250,6 +254,26 @@
 
     - id: im-panel
       name: dsh-im-panel
+
+    # QQ 自定义菜单 / 指令面板（机器人上线后按配置对齐，内容一致时不写平台）、管理指令
+    # （/qqsync 等，只认 admins）和群主授权 `/授权全消息 <群号>`。授权按钮要 QQ 适配器开
+    # markdown + keyboard；botUin（机器人 QQ 号）/ botUid（u_ 开头）只走环境变量。
+    - id: im-qq-panel
+      name: dsh-im-qq-panel
+      config:
+        botId: !!js '`qq:${process.env.ORANGE_QQ_APP_ID}`'
+        autoSync: true
+        admins: !!js (process.env.ORANGE_ADMINS ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+        panels:
+          - key: c2c
+            scope: c2c
+          - key: group
+            scope: group
+            include: [help, status]
+            exclude: [stop, clear]
+        authorize:
+          botUin: !!js process.env.ORANGE_QQ_BOT_UIN ?? ''
+          botUid: !!js process.env.ORANGE_QQ_BOT_UID ?? ''
 
     # ---- 橘波特本体 ---------------------------------------------------------------------------
     # 管理员（主人）只认这里的 id：QQ 上同一个人在群里（member_openid）和私聊（user_openid）

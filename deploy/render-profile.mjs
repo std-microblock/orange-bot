@@ -32,6 +32,7 @@ const built = [
   join(extras, 'packages', 'im-polish', 'dist', 'index.js'),
   join(extras, 'packages', 'im-stickers', 'dist', 'index.js'),
   join(extras, 'packages', 'im-panel', 'dist', 'index.js'),
+  join(extras, 'packages', 'im-qq-panel', 'dist', 'index.js'),
   join(orange, 'packages', 'dsh-plugin-orange', 'dist', 'index.js'),
   join(orange, 'packages', 'dsh-plugin-orange-voice', 'dist', 'index.js'),
 ]
