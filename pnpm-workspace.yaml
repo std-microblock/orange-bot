@@ -1,9 +1,10 @@
-# Only packages that can stand on their own are workspace members.
-#
-# packages/orange-ext is deliberately absent: it is a plugin of the crossgram
-# monorepo and imports `@mtproto-relay/bridge` from there (`workspace:*`), so it
-# cannot resolve or build inside this workspace. Its source is kept here and is
-# meant to be dropped into crossgram's own packages/ — see its README.
 packages:
-  - packages/dsh-plugin-orange
-  - packages/koishi-plugin-orange-bridge
+  - packages/*
+
+# One hoisted node_modules, the layout a deployed profile installs. The harness
+# packages are not on a registry: they are types here (scripts/harness-tsconfig.mjs)
+# and real modules only inside the deployment, hence `autoInstallPeers: false`.
+nodeLinker: hoisted
+autoInstallPeers: false
+allowBuilds:
+  esbuild: true

@@ -1,0 +1,22 @@
+{
+  "//": [
+    "Shared compiler settings. Each package extends this plus the generated `tsconfig.harness.json`",
+    "and declares only `rootDir`/`outDir` itself."
+  ],
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "declaration": true,
+    "sourceMap": false,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "allowJs": false
+  }
+}

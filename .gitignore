@@ -1,13 +1,18 @@
 node_modules/
 
-# build output (`node build.mjs`, also run by `npm install` via the prepare script)
-packages/*/lib/
+# build output: host halves (tsc) and browser bundles (scripts/build-client.mjs)
+packages/*/dist/
+packages/*/client/client.js
 
-# resolved per install (the deploy copy installs with npm); the workspace lock
-# (pnpm-lock.yaml) is committed instead
+# generated per machine (scripts/harness-tsconfig.mjs) and its local pointers
+tsconfig.harness.json
+.harness-root
+.extras-root
+
+# migration output (scripts/migrate-from-v1.mjs) and deployment residue
+migration-out/
+*.tgz
 package-lock.json
-
-# logs / editor / OS noise
 *.log
 *.tsbuildinfo
 .DS_Store
