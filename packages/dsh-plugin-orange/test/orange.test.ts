@@ -56,6 +56,15 @@ test('store: scope normalization and visibility', () => {
   assert.equal(visibleScope(`chat:${OTHER}`, GROUP, true), true)
 })
 
+test('store: per-record keys are path-safe', async () => {
+  const { encodeKey, decodeKey, SAFE_KEY } = await import('../src/store.ts')
+  for (const key of ['2026-11-20|router|deepseek/x', 'owner/repo#7', 'gh:since', 'k_trap', 'current', '42']) {
+    assert.match(encodeKey(key), SAFE_KEY)
+    assert.equal(decodeKey(encodeKey(key)), key)
+  }
+  assert.equal(encodeKey('current'), 'current')
+})
+
 test('store: users, tags, usage, links', async () => {
   const store = new OrangeStore(memoryTables(), () => Date.parse('2026-11-20T10:00:00Z'))
   await store.seen('U1', '小明', GROUP)

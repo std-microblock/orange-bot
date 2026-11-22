@@ -32,7 +32,7 @@ import { applyPanel } from './panel.ts'
 import { personaSection } from './persona.ts'
 import { compilePatterns, fragmentText, GUARDED_TOOLS, hardInsult, leakReason, sensitiveReason } from './privacy.ts'
 import { effective, homeChat, isAdmin, profileOf, projectsFor, roleOf, type Effective, type HostedLike } from './roles.ts'
-import { OrangeStore, type OrangeTables } from './store.ts'
+import { OrangeStore, pathSafeTable, type OrangeTables, type Table } from './store.ts'
 import { applyTools } from './tools.ts'
 import { usageOf } from './usage.ts'
 import { agentsText } from './workspace.ts'
@@ -86,14 +86,16 @@ export class OrangeService extends Service {
     const im = ctx.im as unknown as ImApi
     const domain = await ctx.storageDomain.open(orangeDomain)
     this.domain = domain
+    // per-record keys become file names: arbitrary keys (usage day|kind|model, owner/repo#n) are encoded.
+    const safe = <T>(table: unknown) => pathSafeTable(table as Table<unknown>) as unknown as T
     const store = new OrangeStore({
-      memory: domain.table('memory'),
-      users: domain.table('users'),
-      settings: domain.table('settings'),
-      usage: domain.table('usage'),
-      links: domain.table('links'),
-      state: domain.table('state'),
-    } as unknown as OrangeTables)
+      memory: safe(domain.table('memory')),
+      users: safe(domain.table('users')),
+      settings: safe(domain.table('settings')),
+      usage: safe(domain.table('usage')),
+      links: safe(domain.table('links')),
+      state: safe(domain.table('state')),
+    } as OrangeTables)
     this.storeValue = store
     let stopPoller: (() => void) | undefined
     yield async () => {

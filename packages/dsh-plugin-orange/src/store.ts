@@ -251,16 +251,41 @@ export class OrangeStore {
   async setState(key: string, value: string): Promise<void> { await this.tables.state.put(key, { value }) }
 }
 
-/** In-memory tables, for tests and dry runs. */
+/** In-memory tables, for tests and dry runs. Keys go through {@link pathSafeTable}, as in production. */
 export function memoryTables(): OrangeTables {
   const table = <V>(): Table<V> => {
     const map = new Map<string, V>()
-    return {
+    return pathSafeTable({
       get: (key) => map.get(key),
       entries: () => map.entries(),
-      put: async (key, value) => { map.set(key, value) },
+      put: async (key, value) => {
+        if (!SAFE_KEY.test(key)) throw new Error(`per-record key '${key}' is not path-safe`)
+        map.set(key, value)
+      },
       delete: async (key) => map.delete(key),
-    }
+    })
   }
   return { memory: table(), users: table(), settings: table(), usage: table(), links: table(), state: table() }
+}
+
+/** What a `per-record` storage-domain key may look like (it becomes a file name). */
+export const SAFE_KEY = /^[a-zA-Z0-9_-]+$/
+
+/** A key as stored: itself when path-safe, else `k_` + base64url (a safe key that itself starts with `k_` is encoded too). */
+export function encodeKey(key: string): string {
+  return SAFE_KEY.test(key) && !key.startsWith('k_') ? key : `k_${Buffer.from(key, 'utf8').toString('base64url')}`
+}
+
+export function decodeKey(stored: string): string {
+  return stored.startsWith('k_') ? Buffer.from(stored.slice(2), 'base64url').toString('utf8') : stored
+}
+
+/** Wrap a table so arbitrary keys (`2026-11-20|router|model`, `owner/repo#7`, openids) map to path-safe ones. */
+export function pathSafeTable<V>(table: Table<V>): Table<V> {
+  return {
+    get: (key) => table.get(encodeKey(key)),
+    *entries() { for (const [key, value] of table.entries()) yield [decodeKey(key), value] },
+    put: (key, value) => table.put(encodeKey(key), value),
+    delete: (key) => table.delete(encodeKey(key)),
+  }
 }
