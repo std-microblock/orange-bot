@@ -1,0 +1,35 @@
+# 最小可用组合：一个 koishi 容器（官方 bot 那侧）+ 一个 bot 容器（橘波特本体）。
+# 先 `cp .env.example .env` 填值，再 `docker compose up -d`。
+name: orange-bot
+
+services:
+  koishi:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["koishi-entrypoint.sh"]
+    env_file: [.env]
+    ports:
+      - "${KOISHI_PORT:-5140}:5140"
+    volumes:
+      - koishi-data:/koishi          # koishi 的配置/数据：不挂就重启丢
+    restart: unless-stopped
+
+  bot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["bot-entrypoint.sh"]
+    env_file: [.env]
+    depends_on: [koishi]
+    ports:
+      - "127.0.0.1:${BOT_PORT:-3080}:3080"   # 面板只绑本机，要外网自己加反代
+    volumes:
+      - bot-dsh:/data                # $DSH_HOME：profile、.env 由 entrypoint 生成
+      - bot-workspace:/workspace     # agent 的工作区（后台任务在这里跑命令）
+    restart: unless-stopped
+
+volumes:
+  koishi-data:
+  bot-dsh:
+  bot-workspace:
