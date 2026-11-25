@@ -16,9 +16,11 @@ import { extrasRoot, harnessRoot, repoRoot } from './harness-root.mjs'
 /** The harness specifiers the plugins import, and where their declarations live inside a built checkout. */
 const HARNESS_PEERS = {
   '@deepseek-ai/cordis': 'vendor/cordis/lib/types/index.d.ts',
-  '@deepseek-ai/cordis-plugin-im-core': 'vendor/plugin-im-core/lib/types/index.d.ts',
+  // The Satori-derived IM packages live under `vendor/im/` on the mainline (`vendor/plugin-im-*` and
+  // `vendor/satori-*` were the feat/im-automation layout).
+  '@deepseek-ai/cordis-plugin-im-core': 'vendor/im/core/lib/types/index.d.ts',
   '@deepseek-ai/schemastery': 'vendor/schemastery/lib/types/index.d.ts',
-  '@deepseek-ai/satori-element': 'vendor/satori-element/lib/types/index.d.ts',
+  '@deepseek-ai/satori-element': 'vendor/im/element/lib/types/index.d.ts',
   '@deepseek-ai/dsh-im': 'packages/experimental/im/lib/types/index.d.ts',
   '@deepseek-ai/dsh-agent': 'packages/core/agent/lib/types/index.d.ts',
   '@deepseek-ai/dsh-client-connection': 'packages/client/connection/lib/types/index.d.ts',
